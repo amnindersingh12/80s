@@ -1,0 +1,404 @@
+import { AppError } from "../errors.js";
+import { Semaphore } from "../lib/concurrency.js";
+import { pick, pickArray, pickNumber, pickString } from "../lib/fields.js";
+import { fillPath, joinUrl, requestJson, sleep as defaultSleep, type FetchFn, type JsonResponse } from "../lib/http.js";
+import type { RemoteProviderConfig } from "../config.js";
+import {
+  MIME_BY_EXTENSION,
+  inferLossless,
+  type AudioProvider,
+  type JobProgress,
+  type ProviderTrack,
+  type SearchOptions,
+  type StreamOptions,
+  type StreamSource,
+} from "./types.js";
+
+/** Anything that can hand out bearer tokens (SupabaseAuth in production). */
+export interface TokenSource {
+  getAccessToken(): Promise<string>;
+  invalidate(rejectedToken?: string): void;
+  close?(): void;
+}
+
+export interface RemoteMediaProviderOptions {
+  config: RemoteProviderConfig;
+  auth: TokenSource;
+  fetch?: FetchFn;
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  name?: string;
+}
+
+interface JobState {
+  jobId?: string;
+  status?: string;
+  url?: string;
+  progress?: number;
+  stage?: string;
+  error?: string;
+  expiresAt?: number;
+  done: boolean;
+  failed: boolean;
+}
+
+interface AuthedRequest {
+  method?: "GET" | "POST" | "PUT";
+  body?: unknown;
+  timeoutMs: number;
+  retries: number;
+  signal?: AbortSignal;
+  label: string;
+}
+
+class JobDeadline extends Error {}
+
+/**
+ * Adapter for the personal Fastify/REST media server.
+ *
+ * search → `GET {MEDIA_SEARCH_PATH}?{MEDIA_SEARCH_PARAM}=…` (15 s timeout)
+ * stream → `POST {MEDIA_JOB_CREATE_PATH} {"{MEDIA_TRACK_ID_FIELD}": id}`, then
+ *          poll `GET {MEDIA_JOB_STATUS_PATH}` every 2 s for at most 45 s until
+ *          the job exposes a signed R2/CDN URL. At most `MEDIA_JOB_CONCURRENCY`
+ *          (2) jobs run at once; the rest queue for `MEDIA_JOB_QUEUE_TIMEOUT_MS`.
+ */
+export class RemoteMediaProvider implements AudioProvider {
+  readonly name: string;
+  readonly kind = "remote-media";
+  readonly semaphore: Semaphore;
+
+  private readonly cfg: RemoteProviderConfig;
+  private readonly fetchFn: FetchFn;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+
+  constructor(private readonly options: RemoteMediaProviderOptions) {
+    this.cfg = options.config;
+    this.name = options.name ?? "remote";
+    this.fetchFn = options.fetch ?? fetch;
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? defaultSleep;
+    this.semaphore = new Semaphore(this.cfg.jobConcurrency);
+  }
+
+  async search(query: string, options: SearchOptions = {}): Promise<ProviderTrack[]> {
+    const url = new URL(joinUrl(this.cfg.baseUrl, this.cfg.searchPath));
+    for (const [k, v] of Object.entries(this.cfg.searchExtraParams)) url.searchParams.set(k, v);
+    url.searchParams.set(this.cfg.searchParam, query);
+    if (this.cfg.searchLimitParam && options.limit) {
+      url.searchParams.set(this.cfg.searchLimitParam, String(options.limit));
+    }
+
+    const res = await this.authedJson(url.toString(), {
+      timeoutMs: this.cfg.requestTimeoutMs,
+      retries: 0,
+      signal: options.signal,
+      label: "Media search",
+    });
+    this.assertOk(res, "Media search");
+
+    const tracks = pickArray(res.data, this.cfg.searchResultsPath)
+      .map((raw) => this.mapTrack(raw))
+      .filter((t): t is ProviderTrack => t !== null);
+    return options.limit ? tracks.slice(0, options.limit) : tracks;
+  }
+
+  async getTrackMetadata(id: string): Promise<ProviderTrack | null> {
+    if (!this.cfg.trackPath) return null;
+    const url = joinUrl(this.cfg.baseUrl, fillPath(this.cfg.trackPath, { id, trackId: id }));
+    const res = await this.authedJson(url, {
+      timeoutMs: this.cfg.requestTimeoutMs,
+      retries: 1,
+      label: "Track lookup",
+    });
+    if (res.status === 404) return null;
+    this.assertOk(res, "Track lookup");
+    const raw = pick(res.data, "track|data.track|data") ?? res.data;
+    return this.mapTrack(raw);
+  }
+
+  getStreamUrl(id: string, options: StreamOptions = {}): Promise<StreamSource> {
+    return this.semaphore.use(() => this.runJob(id, options), {
+      timeoutMs: this.cfg.jobQueueTimeoutMs,
+      signal: options.signal,
+    });
+  }
+
+  /** Adds the bearer token for files hosted on the media server itself. */
+  async authorizeStream(source: StreamSource): Promise<Record<string, string>> {
+    if (!this.needsAuth(source.url)) return {};
+    return { authorization: `Bearer ${await this.options.auth.getAccessToken()}` };
+  }
+
+  close(): void {
+    this.options.auth.close?.();
+  }
+
+  // ---------------------------------------------------------------- jobs ---
+
+  private async runJob(id: string, { signal, onProgress }: StreamOptions): Promise<StreamSource> {
+    const startedAt = this.now();
+    const deadlineAt = startedAt + this.cfg.maxJobWaitMs;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new JobDeadline()), this.cfg.maxJobWaitMs);
+    const combined = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+    const remaining = () => Math.max(1, deadlineAt - this.now());
+    const report = (p: JobProgress) => {
+      try {
+        onProgress?.(p);
+      } catch {
+        /* progress listeners must never break the job */
+      }
+    };
+
+    try {
+      report({ stage: "queued" });
+      const createUrl = new URL(joinUrl(this.cfg.baseUrl, fillPath(this.cfg.jobCreatePath, { id, trackId: id })));
+      const isGet = this.cfg.jobCreateMethod === "GET";
+      if (isGet) createUrl.searchParams.set(this.cfg.trackIdField, id);
+
+      const created = await this.authedJson(createUrl.toString(), {
+        method: this.cfg.jobCreateMethod,
+        body: isGet ? undefined : { ...this.cfg.jobExtraBody, [this.cfg.trackIdField]: id },
+        timeoutMs: Math.min(this.cfg.requestTimeoutMs, remaining()),
+        retries: this.cfg.jobRetries,
+        signal: combined,
+        label: "Job creation",
+      });
+      if (created.status === 404) throw new AppError("NOT_FOUND", "Track not found on the media server", { upstreamStatus: 404, provider: this.name });
+      this.assertOk(created, "Job creation");
+
+      let state = this.readJob(created.data);
+      if (state.failed) throw this.jobFailed(state);
+      // Already packaged (cache hit upstream): the URL comes straight back.
+      if (state.url && (state.done || !state.jobId)) return this.toSource(state);
+      if (!state.jobId) {
+        throw new AppError("UPSTREAM_BAD_RESPONSE", "Job creation returned neither a job id nor a URL", { provider: this.name });
+      }
+      const jobId = state.jobId;
+      report({ stage: state.stage ?? state.status ?? "pending", progress: state.progress });
+
+      const statusUrl = joinUrl(this.cfg.baseUrl, fillPath(this.cfg.jobStatusPath, { jobId, id: jobId, trackId: id }));
+      for (;;) {
+        await this.sleep(Math.min(this.cfg.pollIntervalMs, remaining()), combined);
+        if (this.now() >= deadlineAt) throw new JobDeadline();
+
+        const polled = await this.authedJson(statusUrl, {
+          timeoutMs: Math.min(this.cfg.requestTimeoutMs, remaining()),
+          retries: this.cfg.jobRetries,
+          signal: combined,
+          label: "Job status",
+        });
+        if (polled.status === 404) {
+          throw new AppError("JOB_FAILED", "The media server lost track of the packaging job", { upstreamStatus: 404, provider: this.name });
+        }
+        this.assertOk(polled, "Job status");
+
+        state = this.readJob(polled.data);
+        report({ stage: state.stage ?? state.status, progress: state.progress });
+        if (state.failed) throw this.jobFailed(state);
+        if (state.done) {
+          if (!state.url) {
+            throw new AppError("UPSTREAM_BAD_RESPONSE", "Job finished but no download URL was returned", { provider: this.name });
+          }
+          return this.toSource(state);
+        }
+      }
+    } catch (err) {
+      if (err instanceof JobDeadline || (deadline.signal.aborted && !signal?.aborted)) {
+        throw new AppError(
+          "JOB_TIMEOUT",
+          `The media server is still preparing this track after ${Math.round(this.cfg.maxJobWaitMs / 1000)} s. Try again shortly.`,
+          { provider: this.name },
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private readJob(data: unknown): JobState {
+    const f = this.cfg.jobFields;
+    const status = pickString(data, f.status)?.toLowerCase();
+    let progress = pickNumber(data, f.progress);
+    if (progress !== undefined) progress = Math.max(0, Math.min(1, progress > 1 ? progress / 100 : progress));
+    const rawUrl = pickString(data, f.url);
+    const expires = pick(data, f.expiresAt);
+    return {
+      jobId: pickString(data, f.jobId),
+      status,
+      url: rawUrl ? this.absolute(rawUrl) : undefined,
+      progress,
+      stage: pickString(data, f.stage),
+      error: pickString(data, f.error),
+      expiresAt: parseExpiry(expires),
+      done: status !== undefined && this.cfg.jobSuccessStates.includes(status),
+      failed: status !== undefined && this.cfg.jobFailureStates.includes(status),
+    };
+  }
+
+  private jobFailed(state: JobState): AppError {
+    const detail = state.error ? `: ${state.error.slice(0, 200)}` : "";
+    return new AppError("JOB_FAILED", `The media server could not prepare this track${detail}`, { provider: this.name });
+  }
+
+  private toSource(state: JobState): StreamSource {
+    const url = state.url as string;
+    const ext = extensionFromUrl(url) ?? "flac";
+    return {
+      url,
+      expiresAt: state.expiresAt ?? expiryFromSignedUrl(url),
+      mimeType: MIME_BY_EXTENSION[ext] ?? "audio/flac",
+      extension: ext,
+    };
+  }
+
+  // -------------------------------------------------------------- helpers ---
+
+  private async authedJson(url: string, req: AuthedRequest): Promise<JsonResponse> {
+    const send = async (token: string) =>
+      requestJson(url, {
+        method: req.method ?? "GET",
+        body: req.body,
+        headers: { authorization: `Bearer ${token}` },
+        timeoutMs: req.timeoutMs,
+        retries: req.retries,
+        signal: req.signal,
+        fetch: this.fetchFn,
+        label: req.label,
+        provider: this.name,
+      });
+
+    const token = await this.options.auth.getAccessToken();
+    let res = await send(token);
+    if (res.status === 401) {
+      // Token revoked or clock skew: refresh once and replay.
+      this.options.auth.invalidate(token);
+      res = await send(await this.options.auth.getAccessToken());
+      if (res.status === 401) {
+        throw new AppError("UPSTREAM_AUTH_FAILED", "The media server rejected our session", { upstreamStatus: 401, provider: this.name });
+      }
+    }
+    if (res.status === 403) {
+      throw new AppError("UPSTREAM_AUTH_FAILED", "The media server denied access for this account", { upstreamStatus: 403, provider: this.name });
+    }
+    return res;
+  }
+
+  private assertOk(res: JsonResponse, label: string): void {
+    if (res.status >= 200 && res.status < 300) return;
+    if (res.status === 404) throw new AppError("NOT_FOUND", `${label}: not found`, { upstreamStatus: 404, provider: this.name });
+    throw new AppError("UPSTREAM_BAD_RESPONSE", `${label} failed with HTTP ${res.status}`, { upstreamStatus: res.status, provider: this.name });
+  }
+
+  private absolute(url: string): string {
+    return /^https?:\/\//i.test(url) ? url : joinUrl(this.cfg.baseUrl, url);
+  }
+
+  private needsAuth(url: string): boolean {
+    if (this.cfg.streamAuth === "always") return true;
+    if (this.cfg.streamAuth === "never") return false;
+    try {
+      return new URL(url).origin === new URL(this.cfg.baseUrl).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  mapTrack(raw: unknown): ProviderTrack | null {
+    if (!raw || typeof raw !== "object") return null;
+    const f = this.cfg.trackFields;
+    const id = pickString(raw, f.id);
+    const title = pickString(raw, f.title);
+    if (!id || !title) return null;
+
+    const durationMs = pickNumber(raw, f.durationMs);
+    let durationSec = pickNumber(raw, f.durationSec);
+    if (durationSec === undefined && durationMs !== undefined) durationSec = durationMs / 1000;
+    if (durationSec !== undefined && durationSec > 36_000) durationSec = durationSec / 1000; // ms in disguise
+
+    const cover = pickString(raw, f.coverUrl);
+    const coverUrl = cover && (/^https?:\/\//i.test(cover) || cover.startsWith("/")) ? this.absolute(cover) : undefined;
+    const format = pickString(raw, f.format)?.toLowerCase().replace(/^\./, "");
+    const quality = pickString(raw, f.quality);
+    const year = pickNumber(raw, f.year) ?? yearFromDate(pickString(raw, "releaseDate|release_date|album.releaseDate"));
+
+    return compact({
+      id,
+      provider: this.name,
+      title,
+      artist: pickString(raw, f.artist) ?? "Unknown artist",
+      album: pickString(raw, f.album),
+      durationSec: durationSec !== undefined ? Math.round(durationSec) : undefined,
+      coverUrl,
+      format: format ?? "flac",
+      lossless: inferLossless(format, quality),
+      bitDepth: pickNumber(raw, f.bitDepth),
+      sampleRate: normalizeSampleRate(pickNumber(raw, f.sampleRate)),
+      bitrateKbps: pickNumber(raw, f.bitrateKbps),
+      year,
+      trackNumber: pickNumber(raw, f.trackNumber),
+      isrc: pickString(raw, f.isrc),
+    });
+  }
+}
+
+function compact<T extends object>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
+}
+
+function yearFromDate(s?: string): number | undefined {
+  const m = s?.match(/^(\d{4})/);
+  return m ? Number(m[1]) : undefined;
+}
+
+/** 44.1 → 44100, 96000 stays 96000. */
+function normalizeSampleRate(n?: number): number | undefined {
+  if (n === undefined) return undefined;
+  return n < 1000 ? Math.round(n * 1000) : Math.round(n);
+}
+
+function extensionFromUrl(url: string): string | undefined {
+  try {
+    const m = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i);
+    return m?.[1]?.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Accepts ISO strings, epoch seconds or epoch milliseconds. */
+export function parseExpiry(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
+  if (typeof value === "string" && value) {
+    if (/^\d+$/.test(value)) return parseExpiry(Number(value));
+    const t = Date.parse(value);
+    return Number.isNaN(t) ? undefined : t;
+  }
+  return undefined;
+}
+
+/**
+ * Reads the expiry baked into presigned URLs: AWS SigV4 (Cloudflare R2, S3:
+ * `X-Amz-Date` + `X-Amz-Expires`) or legacy `Expires=<epoch seconds>`.
+ */
+export function expiryFromSignedUrl(url: string): number | undefined {
+  try {
+    const q = new URL(url).searchParams;
+    const date = q.get("X-Amz-Date") ?? q.get("x-amz-date");
+    const ttl = q.get("X-Amz-Expires") ?? q.get("x-amz-expires");
+    if (date && ttl) {
+      const m = date.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
+      if (m) {
+        const [, y, mo, d, h, mi, s] = m.map(Number) as number[];
+        return Date.UTC(y!, mo! - 1, d!, h!, mi!, s!) + Number(ttl) * 1000;
+      }
+    }
+    const expires = q.get("Expires") ?? q.get("expires");
+    if (expires && /^\d+$/.test(expires)) return Number(expires) * 1000;
+  } catch {
+    /* not a URL we understand */
+  }
+  return undefined;
+}

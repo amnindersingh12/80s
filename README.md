@@ -89,6 +89,15 @@ Play Store users can buy full version directly from the app itself.
 
 This feature list is not exhaustive and only main features are listed.
 
+## Lossless web player & streaming API (`web/`)
+
+[`web/`](web/README.md) holds a standalone TypeScript workspace (Fastify API + React UI). It
+streams FLAC from a personal Supabase-authenticated media server through a Range-aware proxy,
+with an optional OpenSubsonic/Navidrome fallback, and builds Last.fm / ListenBrainz /
+MusicBrainz recommendations and radio. It is independent of the Android build. Run
+`cd web && npm install && npm run dev`; see [`web/README.md`](web/README.md) for configuration
+and [`TASKS.md`](TASKS.md) for status.
+
 ## Roadmap
 
 - [x] Initial development and setup

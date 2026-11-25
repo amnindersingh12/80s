@@ -1,0 +1,49 @@
+name: Web player (web/)
+
+on:
+    push:
+        paths:
+            - "web/**"
+            - ".github/workflows/web.yml"
+    pull_request:
+        paths:
+            - "web/**"
+            - ".github/workflows/web.yml"
+    workflow_dispatch:
+
+jobs:
+    test-and-build:
+        name: Test & build
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: web
+        services:
+            redis:
+                image: redis:7-alpine
+                ports:
+                    - 6379:6379
+        steps:
+            -   name: Checkout code
+                uses: actions/checkout@v5
+
+            -   name: Set up Node.js
+                uses: actions/setup-node@v4
+                with:
+                    node-version: 22
+                    cache: npm
+                    cache-dependency-path: web/package-lock.json
+
+            -   name: Install dependencies
+                run: npm ci
+
+            -   name: Type-check
+                run: npm run typecheck
+
+            -   name: Unit tests
+                run: npm test
+                env:
+                    TEST_REDIS_URL: redis://localhost:6379
+
+            -   name: Build client and server
+                run: npm run build
