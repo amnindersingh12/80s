@@ -52,7 +52,7 @@ export function SearchPanel({ query, onQuery }: { query: string; onQuery: (q: st
         if ((err as Error).name === "AbortError") return;
         setState({ kind: "error", query: q, message: describeError(err).message });
       }
-    }, 250);
+    }, 500);
     return () => {
       controller.abort();
       window.clearTimeout(timer);

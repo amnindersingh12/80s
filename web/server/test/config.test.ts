@@ -31,7 +31,7 @@ describe("loadConfig", () => {
       streamAuth: "auto",
     });
     expect(c.remote?.supabase).toMatchObject({ refreshMarginMs: 60_000, timeoutMs: 15_000 });
-    expect(c.cacheTtl).toEqual({ searchMs: 900_000, streamUrlMs: 21_600_000, trackMs: 21_600_000 });
+    expect(c.cacheTtl).toEqual({ searchMs: 1_800_000, streamUrlMs: 21_600_000, trackMs: 21_600_000 });
     expect(c.recommendations.lastfm).toBeUndefined();
     expect(c.recommendations.listenbrainz?.baseUrl).toBe("https://api.listenbrainz.org");
   });

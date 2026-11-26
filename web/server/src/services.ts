@@ -6,6 +6,7 @@ import { createCache, type CacheStore } from "./lib/cache.js";
 import { joinUrl, type FetchFn } from "./lib/http.js";
 import { CachedProvider } from "./providers/cached.js";
 import { ProviderChain } from "./providers/chain.js";
+import { HiFiPoolProvider } from "./providers/hifi.js";
 import { MockAudioProvider } from "./providers/mock.js";
 import { RemoteMediaProvider, type TokenSource } from "./providers/remote.js";
 import { SubsonicProvider } from "./providers/subsonic.js";
@@ -91,18 +92,40 @@ export async function createServices(config: Config, overrides: ServiceOverrides
       primary = new RemoteMediaProvider({ config: config.remote, auth, fetch: fetchFn });
     } else if (config.subsonic) {
       primary = new SubsonicProvider(config.subsonic, { fetch: fetchFn });
-    } else {
-      throw new Error("No provider configured: set MEDIA_API_BASE, SUBSONIC_URL or DEMO_MODE=true");
+    } else if (!config.hifi) {
+      throw new Error("No provider configured: set MEDIA_API_BASE, HIFI_API_INSTANCES, SUBSONIC_URL or DEMO_MODE=true");
     }
   }
-  if (!fallback && config.subsonic && primary.kind !== "opensubsonic" && !config.demo) {
+  if (!fallback && config.subsonic && primary?.kind !== "opensubsonic" && !config.demo) {
     fallback = new SubsonicProvider(config.subsonic, { fetch: fetchFn });
   }
 
   const ttl = config.cacheTtl;
+  let providers: CachedProvider[];
+  if (overrides.primary) {
+    providers = [new CachedProvider(overrides.primary, cache, ttl, overrides.now)];
+    if (fallback) providers.push(new CachedProvider(fallback, cache, ttl, overrides.now));
+  } else if (config.demo) {
+    providers = [new CachedProvider(primary!, cache, ttl, overrides.now)];
+  } else {
+    const byName = new Map<string, AudioProvider>();
+    if (config.hifi) byName.set("hifi", new HiFiPoolProvider({ ...config.hifi, fetch: fetchFn, now: overrides.now }));
+    if (primary) byName.set(primary.name, primary);
+    if (fallback) byName.set(fallback.name, fallback);
+    const ordered: AudioProvider[] = [];
+    for (const name of config.providerOrder) {
+      const p = byName.get(name);
+      if (p) {
+        ordered.push(p);
+        byName.delete(name);
+      }
+    }
+    for (const p of byName.values()) ordered.push(p);
+    providers = ordered.map((p) => new CachedProvider(p, cache, ttl, overrides.now));
+  }
+
   const chain = new ProviderChain(
-    new CachedProvider(primary, cache, ttl, overrides.now),
-    fallback ? new CachedProvider(fallback, cache, ttl, overrides.now) : undefined,
+    providers,
     {
       cooldownMs: config.fallbackCooldownMs,
       now: overrides.now,
@@ -117,6 +140,7 @@ export async function createServices(config: Config, overrides: ServiceOverrides
     cache,
     cacheTtlMs: rc.cacheTtlMs,
     matchConcurrency: rc.matchConcurrency,
+    maxMatchLookups: rc.maxMatchLookups,
     lastfm: rc.lastfm ? new LastfmClient({ ...rc.lastfm, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,
     listenbrainz: rc.listenbrainz ? new ListenBrainzClient({ ...rc.listenbrainz, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,
     musicbrainz: rc.musicbrainz ? new MusicBrainzClient({ ...rc.musicbrainz, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,

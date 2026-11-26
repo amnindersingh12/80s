@@ -69,6 +69,7 @@ export interface RemoteProviderConfig {
   jobRetries: number;
   jobConcurrency: number;
   jobQueueTimeoutMs: number;
+  searchMaxPerMin: number;
   streamAuth: "auto" | "always" | "never";
   /**
    * How requests to the media server authenticate (MEDIA_AUTH_MODE, `auto` already resolved):
@@ -101,7 +102,14 @@ export interface RecommendationConfig {
   musicbrainz?: { baseUrl: string; userAgent: string };
   timeoutMs: number;
   matchConcurrency: number;
+  maxMatchLookups: number;
   cacheTtlMs: number;
+}
+
+export interface HiFiConfig {
+  instances: string[];
+  timeoutMs: number;
+  cooldownMs: number;
 }
 
 export interface Config {
@@ -118,6 +126,8 @@ export interface Config {
   /** MEDIA_FRONTEND_URL: page scanned at startup to fill blank SUPABASE_* / MEDIA_API_BASE. */
   frontendUrl?: string;
   demo: boolean;
+  providerOrder: string[];
+  hifi?: HiFiConfig;
   remote?: RemoteProviderConfig;
   subsonic?: SubsonicConfig;
   fallbackCooldownMs: number;
@@ -332,6 +342,7 @@ export function loadConfig(env: Env = process.env): Config {
       jobRetries: r.int("MEDIA_JOB_RETRIES", 1, 0),
       jobConcurrency: r.int("MEDIA_JOB_CONCURRENCY", 2, 1),
       jobQueueTimeoutMs: r.int("MEDIA_JOB_QUEUE_TIMEOUT_MS", 30_000, 1),
+      searchMaxPerMin: r.int("MEDIA_SEARCH_MAX_PER_MIN", 10, 1),
       streamAuth: r.oneOf("MEDIA_STREAM_AUTH", ["auto", "always", "never"] as const, "auto"),
       authMode,
       authModeSetting: authModeSetting ?? "auto",
@@ -374,8 +385,19 @@ export function loadConfig(env: Env = process.env): Config {
     };
   }
 
+  const hifiRaw = r.list("HIFI_API_INSTANCES", []);
+  const hifi: HiFiConfig | undefined = hifiRaw.length
+    ? {
+        instances: env.HIFI_API_INSTANCES!.split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean),
+        timeoutMs: r.int("HIFI_TIMEOUT_MS", 10_000, 1),
+        cooldownMs: r.int("HIFI_COOLDOWN_MS", 60_000, 0),
+      }
+    : undefined;
+
+  const providerOrder = r.list("PROVIDER_ORDER", []);
+
   const demoRaw = r.str("DEMO_MODE");
-  const demo = demoRaw === undefined ? !remote && !subsonic : r.bool("DEMO_MODE", false);
+  const demo = demoRaw === undefined ? !remote && !subsonic && !hifi : r.bool("DEMO_MODE", false);
 
   const lastfmKey = r.str("LASTFM_API_KEY");
   const recommendations: RecommendationConfig = {
@@ -398,6 +420,7 @@ export function loadConfig(env: Env = process.env): Config {
       : undefined,
     timeoutMs: r.int("RECOMMENDATION_TIMEOUT_MS", 8_000, 1),
     matchConcurrency: r.int("RECOMMENDATION_MATCH_CONCURRENCY", 3, 1),
+    maxMatchLookups: r.int("RECOMMENDATION_MAX_MATCH_LOOKUPS", 3, 0),
     cacheTtlMs: r.int("RECOMMENDATION_CACHE_TTL_MS", 3_600_000, 0),
   };
 
@@ -414,11 +437,13 @@ export function loadConfig(env: Env = process.env): Config {
     memoryCacheMaxEntries: r.int("MEMORY_CACHE_MAX_ENTRIES", 1_000, 1),
     frontendUrl,
     demo,
+    providerOrder,
+    hifi,
     remote,
     subsonic,
     fallbackCooldownMs: r.int("FALLBACK_COOLDOWN_MS", 30_000, 0),
     cacheTtl: {
-      searchMs: r.int("SEARCH_CACHE_TTL_MS", 15 * 60_000, 0),
+      searchMs: r.int("SEARCH_CACHE_TTL_MS", 30 * 60_000, 0),
       // Guest (MEDIA_AUTH_MODE=none) links are usually short-lived: 20 min instead of 6 h.
       streamUrlMs: r.int("STREAM_URL_CACHE_TTL_MS", authMode === "none" ? 1_200_000 : 6 * 3_600_000, 0),
       trackMs: r.int("TRACK_CACHE_TTL_MS", 6 * 3_600_000, 0),

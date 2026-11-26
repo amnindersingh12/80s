@@ -45,6 +45,8 @@ export interface EngineDeps {
   musicbrainz?: MusicBrainzClient;
   cacheTtlMs: number;
   matchConcurrency: number;
+  /** Cap uncached provider searches during `recommend()` (default unlimited for tests; 3 in prod). */
+  maxMatchLookups?: number;
   log?: (msg: string, err?: unknown) => void;
 }
 
@@ -100,9 +102,20 @@ export class RecommendationEngine {
     const ranked = diversify(pool.tracks.filter((t) => t.key !== seedKey), 2).slice(0, limit);
     const warnings = [...pool.warnings];
     let matchFailed = false;
+    let remainingLookups = this.deps.maxMatchLookups ?? Number.POSITIVE_INFINITY;
     const relatedTracks = await mapLimit(ranked, this.deps.matchConcurrency, async (t) => {
+      const cacheKey = `recmatch:v1:${t.key}`;
+      const cached = await this.deps.cache.get<Track | null>(cacheKey);
+      if (cached !== undefined) {
+        return cached
+          ? { ...t, availability: "playable" as const, track: cached, coverUrl: t.coverUrl ?? cached.coverUrl }
+          : { ...t, availability: "metadata-only" as const };
+      }
+      if (remainingLookups <= 0) return { ...t, availability: "metadata-only" as const };
+      remainingLookups--;
       try {
         const track = await this.match(t);
+        await this.deps.cache.set(cacheKey, track ?? null, this.deps.cacheTtlMs);
         return track ? { ...t, availability: "playable" as const, track, coverUrl: t.coverUrl ?? track.coverUrl } : { ...t, availability: "metadata-only" as const };
       } catch {
         matchFailed = true;
@@ -110,10 +123,16 @@ export class RecommendationEngine {
       }
     });
 
-    const similarArtists = await mapLimit(pool.artists.slice(0, 12), this.deps.matchConcurrency, async (a) => ({
-      ...a,
-      playable: await this.artistPlayable(a.name).catch(() => false),
-    }));
+    const playableArtists = new Set(
+      relatedTracks.filter((t) => t.availability === "playable").map((t) => normalizeText(splitArtists(t.artist)[0] ?? t.artist)),
+    );
+    const similarArtists =
+      this.deps.maxMatchLookups !== undefined
+        ? pool.artists.slice(0, 12).map((a) => ({ ...a, playable: playableArtists.has(normalizeText(a.name)) }))
+        : await mapLimit(pool.artists.slice(0, 12), this.deps.matchConcurrency, async (a) => ({
+            ...a,
+            playable: await this.artistPlayable(a.name).catch(() => false),
+          }));
     if (matchFailed) warnings.push("Could not check availability for some tracks; the media server did not answer.");
 
     return {

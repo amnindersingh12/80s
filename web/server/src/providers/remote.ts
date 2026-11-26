@@ -1,7 +1,7 @@
 import { AppError } from "../errors.js";
 import { Semaphore } from "../lib/concurrency.js";
 import { pick, pickArray, pickNumber, pickString } from "../lib/fields.js";
-import { fillPath, joinUrl, requestJson, sleep as defaultSleep, type FetchFn, type JsonResponse } from "../lib/http.js";
+import { fillPath, joinUrl, parseRetryAfterMs, requestJson, sleep as defaultSleep, type FetchFn, type JsonResponse } from "../lib/http.js";
 import type { RemoteProviderConfig } from "../config.js";
 import {
   MIME_BY_EXTENSION,
@@ -76,6 +76,8 @@ export class RemoteMediaProvider implements AudioProvider {
   private readonly fetchFn: FetchFn;
   private readonly now: () => number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly searchTimestamps: number[] = [];
+  private readonly maxSearchesPerMin: number;
 
   constructor(private readonly options: RemoteMediaProviderOptions) {
     this.cfg = options.config;
@@ -83,10 +85,22 @@ export class RemoteMediaProvider implements AudioProvider {
     this.fetchFn = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? defaultSleep;
+    this.maxSearchesPerMin = options.config.searchMaxPerMin ?? 10;
     this.semaphore = new Semaphore(this.cfg.jobConcurrency);
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<ProviderTrack[]> {
+    const t = this.now();
+    while (this.searchTimestamps.length && t - this.searchTimestamps[0]! >= 60_000) this.searchTimestamps.shift();
+    if (this.searchTimestamps.length >= this.maxSearchesPerMin) {
+      throw new AppError("UPSTREAM_UNAVAILABLE", "Media search rate limit reached; cooling down", {
+        upstreamStatus: 429,
+        provider: this.name,
+        retryAfterMs: 60_000,
+      });
+    }
+    this.searchTimestamps.push(t);
+
     const url = new URL(joinUrl(this.cfg.baseUrl, this.cfg.searchPath));
     for (const [k, v] of Object.entries(this.cfg.searchExtraParams)) url.searchParams.set(k, v);
     url.searchParams.set(this.cfg.searchParam, query);
@@ -300,6 +314,13 @@ export class RemoteMediaProvider implements AudioProvider {
   private assertOk(res: JsonResponse, label: string): void {
     if (res.status >= 200 && res.status < 300) return;
     if (res.status === 404) throw new AppError("NOT_FOUND", `${label}: not found`, { upstreamStatus: 404, provider: this.name });
+    if (res.status === 429) {
+      throw new AppError("UPSTREAM_UNAVAILABLE", `${label} rate-limited (HTTP 429)`, {
+        upstreamStatus: 429,
+        provider: this.name,
+        retryAfterMs: parseRetryAfterMs(res.headers, res.data),
+      });
+    }
     throw new AppError("UPSTREAM_BAD_RESPONSE", `${label} failed with HTTP ${res.status}`, { upstreamStatus: res.status, provider: this.name });
   }
 

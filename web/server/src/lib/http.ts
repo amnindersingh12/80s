@@ -30,7 +30,23 @@ export interface JsonResponse<T = unknown> {
 class AttemptTimeout extends Error {}
 
 function isTransientStatus(status: number): boolean {
-  return status >= 500 || status === 429 || status === 408;
+  return status >= 500 || status === 408;
+}
+
+/** Parses `retryAfterSeconds` from JSON or `Retry-After` header, defaulting to 60 s. */
+export function parseRetryAfterMs(headers: Headers, body?: unknown, fallbackMs = 60_000): number {
+  if (body && typeof body === "object") {
+    const sec = (body as Record<string, unknown>).retryAfterSeconds ?? (body as Record<string, unknown>).retry_after;
+    if (typeof sec === "number" && Number.isFinite(sec) && sec > 0) return Math.round(sec * 1000);
+  }
+  const h = headers.get("retry-after");
+  if (h) {
+    const n = Number(h);
+    if (Number.isFinite(n) && n > 0) return Math.round(n * 1000);
+    const t = Date.parse(h);
+    if (!Number.isNaN(t) && t > Date.now()) return t - Date.now();
+  }
+  return fallbackMs;
 }
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {

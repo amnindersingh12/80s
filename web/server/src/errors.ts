@@ -37,6 +37,7 @@ const RETRYABLE_CODES = new Set<ErrorCode>([
 export interface AppErrorOptions {
   upstreamStatus?: number;
   provider?: string;
+  retryAfterMs?: number;
   cause?: unknown;
 }
 
@@ -48,6 +49,7 @@ export class AppError extends Error {
   readonly code: ErrorCode;
   readonly upstreamStatus?: number;
   readonly provider?: string;
+  readonly retryAfterMs?: number;
 
   constructor(code: ErrorCode, message: string, options: AppErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -55,6 +57,7 @@ export class AppError extends Error {
     this.code = code;
     this.upstreamStatus = options.upstreamStatus;
     this.provider = options.provider;
+    this.retryAfterMs = options.retryAfterMs;
   }
 
   get status(): number {

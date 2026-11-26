@@ -308,7 +308,13 @@ served from that same origin, never to R2 or a CDN.
 | `REDIS_URL` | – | use Redis instead of the in-memory LRU |
 | `MEMORY_CACHE_MAX_ENTRIES` | `1000` | entry cap of the in-memory LRU (keeps a 512 MiB dyno safe) |
 | `CACHE_PREFIX` | `80s:` | Redis key prefix |
-| `SEARCH_CACHE_TTL_MS` | `900000` | search results (15 min) |
+| `SEARCH_CACHE_TTL_MS` | `1800000` | search results (30 min) |
+| `PROVIDER_ORDER` | – | comma-separated provider order (e.g. `hifi,remote`) |
+| `HIFI_API_INSTANCES` | – | comma-separated no-login HiFi/tracks API bases (e.g. `https://tracks.monochrome.st`) |
+| `HIFI_TIMEOUT_MS` | `10000` | per-instance request timeout |
+| `HIFI_COOLDOWN_MS` | `60000` | per-instance cooldown on `429`/`403`/`5xx` |
+| `MEDIA_SEARCH_MAX_PER_MIN` | `10` | soft search rate limit for the `remote` provider |
+| `RECOMMENDATION_MAX_MATCH_LOOKUPS` | `3` | max uncached provider lookups per `/api/recommendations` call |
 | `STREAM_URL_CACHE_TTL_MS` | `21600000` (`1200000` when auth resolves to `none`) | resolved signed URLs (6 h, or 20 min for short-lived guest links; always capped by URL expiry) |
 | `TRACK_CACHE_TTL_MS` | `21600000` | track metadata (6 h) |
 

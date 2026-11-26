@@ -50,29 +50,49 @@ function toPublic(t: ProviderTrack): Track {
  * `cooldownMs` after a failure so every request does not pay the timeout again.
  */
 export class ProviderChain {
-  private openUntil = 0;
-  private lastError: string | undefined;
+  readonly providers: CachedProvider[];
+  readonly primary: CachedProvider;
+  readonly fallback?: CachedProvider;
+  private readonly openUntil = new Map<string, number>();
+  private readonly lastErrors = new Map<string, string>();
   private readonly cooldownMs: number;
   private readonly now: () => number;
 
   constructor(
-    readonly primary: CachedProvider,
-    readonly fallback?: CachedProvider,
+    primaryOrList: CachedProvider | CachedProvider[],
+    fallbackOrOptions?: CachedProvider | ProviderChainOptions,
     private readonly options: ProviderChainOptions = {},
   ) {
-    this.cooldownMs = options.cooldownMs ?? 30_000;
-    this.now = options.now ?? Date.now;
-    if (fallback && fallback.name === primary.name) throw new Error("Primary and fallback providers need distinct names");
+    if (Array.isArray(primaryOrList)) {
+      if (primaryOrList.length === 0) throw new Error("ProviderChain requires at least one provider");
+      this.providers = primaryOrList;
+      this.options = (fallbackOrOptions as ProviderChainOptions | undefined) ?? {};
+    } else {
+      this.providers = fallbackOrOptions && "searchWithMeta" in fallbackOrOptions
+        ? [primaryOrList, fallbackOrOptions]
+        : [primaryOrList];
+      if (fallbackOrOptions && !("searchWithMeta" in fallbackOrOptions)) {
+        this.options = fallbackOrOptions;
+      }
+    }
+    this.primary = this.providers[0]!;
+    this.fallback = this.providers[1];
+    this.cooldownMs = this.options.cooldownMs ?? 30_000;
+    this.now = this.options.now ?? Date.now;
+    const names = new Set(this.providers.map((p) => p.name));
+    if (names.size !== this.providers.length) throw new Error("Providers in chain need distinct names");
   }
 
   get circuitOpen(): boolean {
-    return this.fallback !== undefined && this.now() < this.openUntil;
+    return this.providers.length > 1 && this.isOpen(this.primary.name);
+  }
+
+  private isOpen(name: string): boolean {
+    return this.now() < (this.openUntil.get(name) ?? 0);
   }
 
   get(name: string): CachedProvider | undefined {
-    if (name === this.primary.name) return this.primary;
-    if (this.fallback && name === this.fallback.name) return this.fallback;
-    return undefined;
+    return this.providers.find((p) => p.name === name);
   }
 
   async search(query: string, options: { limit?: number; signal?: AbortSignal } = {}): Promise<ChainSearchResult> {
@@ -81,12 +101,12 @@ export class ProviderChain {
     for (const [i, p] of order.entries()) {
       try {
         const { tracks, cached } = await p.searchWithMeta(query, options);
-        if (p === this.primary) this.recordSuccess();
+        this.recordSuccess(p.name);
         return { tracks: tracks.map(toPublic), provider: p.name, fallback: p !== this.primary, cached };
       } catch (err) {
         lastErr = err;
         if (!isFailoverEligible(err)) throw err;
-        if (p === this.primary) this.recordFailure(err);
+        this.recordFailure(p.name, err);
         const next = order[i + 1];
         if (next) this.options.onFailover?.({ op: "search", from: p.name, to: next.name, error: err as AppError });
       }
@@ -104,27 +124,27 @@ export class ProviderChain {
   async resolveStream(id: string, options: StreamOptions = {}): Promise<ResolvedStream> {
     const { provider, rawId } = parsePublicId(id);
     const p = this.require(provider);
-    const fb = this.fallback;
+    const others = this.order().filter((other) => other !== p);
 
-    if (p !== this.primary || !fb) {
+    if (others.length === 0) {
       return { source: await p.getStreamUrl(rawId, options), servedBy: p, servedId: rawId, fallback: false };
     }
 
-    if (this.circuitOpen) {
-      const viaFallback = await this.tryFallbackFor(rawId, options).catch(() => undefined);
+    if (this.isOpen(p.name)) {
+      const viaFallback = await this.tryFallbacksFor(p, rawId, others, options);
       if (viaFallback) return viaFallback;
     }
 
     try {
       const source = await p.getStreamUrl(rawId, options);
-      this.recordSuccess();
+      this.recordSuccess(p.name);
       return { source, servedBy: p, servedId: rawId, fallback: false };
     } catch (err) {
       if (!isFailoverEligible(err)) throw err;
-      this.recordFailure(err);
-      const viaFallback = await this.tryFallbackFor(rawId, options).catch(() => undefined);
+      this.recordFailure(p.name, err);
+      const viaFallback = await this.tryFallbacksFor(p, rawId, others, options);
       if (!viaFallback) throw err;
-      this.options.onFailover?.({ op: "stream", from: p.name, to: fb.name, error: err as AppError });
+      this.options.onFailover?.({ op: "stream", from: p.name, to: viaFallback.servedBy.name, error: err as AppError });
       return viaFallback;
     }
   }
@@ -141,41 +161,51 @@ export class ProviderChain {
   }
 
   health(): ProviderHealth[] {
-    const out: ProviderHealth[] = [
-      {
-        name: this.primary.name,
-        kind: this.primary.kind,
-        role: "primary",
-        circuit: this.circuitOpen ? "open" : "closed",
-        ...(this.lastError ? { lastError: this.lastError } : {}),
-      },
-    ];
-    if (this.fallback) out.push({ name: this.fallback.name, kind: this.fallback.kind, role: "fallback", circuit: "closed" });
-    return out;
+    return this.providers.map((p, i) => {
+      const err = this.lastErrors.get(p.name);
+      return {
+        name: p.name,
+        kind: p.kind,
+        role: i === 0 ? "primary" : "fallback",
+        circuit: this.isOpen(p.name) ? "open" : "closed",
+        ...(err ? { lastError: err } : {}),
+      };
+    });
   }
 
   async close(): Promise<void> {
-    await this.primary.close();
-    await this.fallback?.close();
+    await Promise.all(this.providers.map((p) => p.close()));
   }
 
-  /** Finds the same recording on the fallback provider using cached primary metadata. */
-  private async tryFallbackFor(rawId: string, options: StreamOptions): Promise<ResolvedStream | undefined> {
-    const fb = this.fallback;
-    if (!fb) return undefined;
-    const meta = (await this.primary.peekTrack(rawId)) ?? (this.circuitOpen ? undefined : await this.primary.getTrackMetadata(rawId).catch(() => null));
+  /** Finds the same recording on the next healthy provider using cached metadata. */
+  private async tryFallbacksFor(
+    owner: CachedProvider,
+    rawId: string,
+    candidates: CachedProvider[],
+    options: StreamOptions,
+  ): Promise<ResolvedStream | undefined> {
+    const meta = (await owner.peekTrack(rawId)) ?? (this.isOpen(owner.name) ? undefined : await owner.getTrackMetadata(rawId).catch(() => null));
     if (!meta) return undefined;
 
-    const { tracks } = await fb.searchWithMeta(`${meta.artist} ${meta.title}`, { limit: 10 });
-    const match = bestMatch(meta, tracks);
-    if (!match) return undefined;
-    const source = await fb.getStreamUrl(match.candidate.id, options);
-    return { source, servedBy: fb, servedId: match.candidate.id, fallback: true };
+    for (const fb of candidates) {
+      try {
+        const { tracks } = await fb.searchWithMeta(`${meta.artist} ${meta.title}`, { limit: 10 });
+        const match = bestMatch(meta, tracks);
+        if (!match) continue;
+        const source = await fb.getStreamUrl(match.candidate.id, options);
+        this.recordSuccess(fb.name);
+        return { source, servedBy: fb, servedId: match.candidate.id, fallback: true };
+      } catch (err) {
+        if (isFailoverEligible(err)) this.recordFailure(fb.name, err);
+      }
+    }
+    return undefined;
   }
 
   private order(): CachedProvider[] {
-    if (!this.fallback) return [this.primary];
-    return this.circuitOpen ? [this.fallback, this.primary] : [this.primary, this.fallback];
+    const healthy = this.providers.filter((p) => !this.isOpen(p.name));
+    const cooled = this.providers.filter((p) => this.isOpen(p.name));
+    return [...healthy, ...cooled];
   }
 
   private require(name: string): CachedProvider {
@@ -184,13 +214,14 @@ export class ProviderChain {
     return p;
   }
 
-  private recordFailure(err: unknown): void {
-    this.lastError = err instanceof Error ? err.message : String(err);
-    if (this.fallback && this.cooldownMs > 0) this.openUntil = this.now() + this.cooldownMs;
+  private recordFailure(name: string, err: unknown): void {
+    this.lastErrors.set(name, err instanceof Error ? err.message : String(err));
+    const retryMs = err instanceof AppError && err.retryAfterMs ? err.retryAfterMs : this.cooldownMs;
+    if (this.providers.length > 1 && retryMs > 0) this.openUntil.set(name, this.now() + retryMs);
   }
 
-  private recordSuccess(): void {
-    this.openUntil = 0;
-    this.lastError = undefined;
+  private recordSuccess(name: string): void {
+    this.openUntil.delete(name);
+    this.lastErrors.delete(name);
   }
 }
