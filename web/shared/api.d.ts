@@ -152,6 +152,22 @@ export interface RadioResponse {
   warnings: string[];
 }
 
+export interface ResolveTrackRequest {
+  title: string;
+  artist: string;
+  album?: string;
+}
+
+export interface ResolveTrackResponse {
+  track: Track;
+  prepare: PrepareStatus;
+}
+
+export interface HomeResponse extends RecommendationsResponse {
+  genre: string;
+  seedArtist?: string;
+}
+
 export interface ProviderHealth {
   name: string;
   kind: string;

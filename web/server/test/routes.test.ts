@@ -177,4 +177,21 @@ describe("static client serving", () => {
     expect((await a.inject("/assets/missing.js")).statusCode).toBe(404);
     expect((await a.inject("/api/missing")).json().error.code).toBe("NOT_FOUND");
   });
+
+  it("resolves metadata-only tracks via POST /api/tracks/resolve and serves GET /api/home", async () => {
+    const a = await make();
+    const resolved = await a.inject({
+      method: "POST",
+      url: "/api/tracks/resolve",
+      payload: { title: "Karma Police", artist: "Radiohead" },
+    });
+    expect(resolved.statusCode).toBe(200);
+    expect(resolved.json().track.title).toContain("Karma Police");
+    expect(resolved.json().prepare.state).toBe("ready");
+
+    const home = await a.inject("/api/home");
+    expect(home.statusCode).toBe(200);
+    expect(home.json().genre).toBe("Punjabi Pop");
+    expect(home.json().seed.tag).toBe("punjabi pop");
+  });
 });

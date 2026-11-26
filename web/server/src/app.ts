@@ -10,9 +10,12 @@ import type {
   DoctorResponse,
   ErrorCode,
   HealthResponse,
+  HomeResponse,
   PrepareStatus,
   RadioRequest,
   RecommendationSeed,
+  ResolveTrackRequest,
+  ResolveTrackResponse,
   SearchResponse,
   SeedType,
 } from "../../shared/api.js";
@@ -21,6 +24,7 @@ import { runDoctor } from "./doctor.js";
 import type { DiscoveryResult } from "./lib/discovery.js";
 import { AppError, isAppError, toAppError } from "./errors.js";
 import { sleep } from "./lib/http.js";
+import { bestMatch } from "./lib/text.js";
 import { renderDemoCover } from "./providers/mock.js";
 import type { AppServices } from "./services.js";
 import { proxyAudio } from "./services/stream.js";
@@ -244,6 +248,35 @@ export async function buildApp({ config, services, logger = false, env = process
     return sendStatus(reply, tracker.status(id));
   });
 
+  app.post<{ Body: ResolveTrackRequest }>(
+    "/api/tracks/resolve",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["title", "artist"],
+          properties: {
+            title: { type: "string", minLength: 1, maxLength: 200 },
+            artist: { type: "string", minLength: 1, maxLength: 200 },
+            album: { type: "string", maxLength: 200 },
+          },
+        },
+      },
+    },
+    async (request): Promise<ResolveTrackResponse> => {
+      const { title, artist } = request.body;
+      const { tracks } = await chain.search(`${artist.trim()} ${title.trim()}`, { limit: 10 });
+      const track = bestMatch({ title, artist }, tracks)?.candidate ?? tracks[0];
+      if (!track) throw new AppError("NOT_FOUND", `No playable match for "${artist} - ${title}"`);
+      const pending = tracker.ensure(track.id).then(
+        () => undefined,
+        () => undefined,
+      );
+      await Promise.race([pending, sleep(500)]);
+      return { track, prepare: tracker.status(track.id) };
+    },
+  );
+
   app.get<{ Params: { id: string } }>("/api/tracks/:id/prepare", { schema: { params: idParams } }, async (request, reply) =>
     sendStatus(reply, tracker.status(request.params.id)),
   );
@@ -305,6 +338,29 @@ export async function buildApp({ config, services, logger = false, env = process
       const type = (q.type ?? q.seed ?? (q.tag ? "tag" : q.title || q.trackId ? "track" : "artist")) as SeedType;
       const seed: RecommendationSeed = { type, ...strip({ trackId: q.trackId, artist: q.artist, title: q.title, tag: q.tag }) };
       return engine.recommend(seed, { limit: q.limit });
+    },
+  );
+
+  app.get<{ Querystring: { seedArtist?: string; genre?: string; limit?: number } }>(
+    "/api/home",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            seedArtist: { type: "string", maxLength: 200 },
+            genre: { type: "string", maxLength: 100 },
+            limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
+          },
+        },
+      },
+    },
+    async (request): Promise<HomeResponse> => {
+      const genre = request.query.genre?.trim() || "Punjabi Pop";
+      const seedArtist = request.query.seedArtist?.trim() || undefined;
+      const seed: RecommendationSeed = seedArtist ? { type: "artist", artist: seedArtist } : { type: "tag", tag: genre };
+      const rec = await engine.recommend(seed, { limit: request.query.limit });
+      return { genre, ...(seedArtist ? { seedArtist } : {}), ...rec };
     },
   );
 
