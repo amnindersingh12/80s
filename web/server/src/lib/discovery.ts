@@ -223,7 +223,10 @@ export async function discoverFrontend(frontendUrl: string, opts: DiscoveryOptio
 /** Variables discovery can fill; explicit (non-blank) env values always win. */
 export function needsDiscovery(env: Env): boolean {
   const blank = (k: string) => !env[k]?.trim();
-  return Boolean(env.MEDIA_FRONTEND_URL?.trim()) && (blank("SUPABASE_URL") || blank("SUPABASE_ANON_KEY") || blank("MEDIA_API_BASE"));
+  if (!env.MEDIA_FRONTEND_URL?.trim()) return false;
+  const mode = env.MEDIA_AUTH_MODE?.trim().toLowerCase();
+  if (!blank("MEDIA_API_BASE") && (mode === "none" || mode === "bearer" || mode === "login")) return false;
+  return blank("SUPABASE_URL") || blank("SUPABASE_ANON_KEY") || blank("MEDIA_API_BASE");
 }
 
 /** Returns a copy of [env] with blank SUPABASE_URL / SUPABASE_ANON_KEY / MEDIA_API_BASE filled from [found]. */

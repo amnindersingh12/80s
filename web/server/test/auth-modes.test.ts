@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { LoginAuth } from "../src/auth/login.js";
 import { ConfigError, loadConfig, loadConfigWithFallback, type Env } from "../src/config.js";
 import { MemoryCache } from "../src/lib/cache.js";
 import { createServices } from "../src/services.js";
@@ -36,9 +37,12 @@ describe("MEDIA_AUTH_MODE config", () => {
   it("validates each mode's requirements", () => {
     expect(() => loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "bearer" })).toThrow(/MEDIA_BEARER_TOKEN is required/);
     expect(() => loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "supabase" })).toThrow(ConfigError);
+    expect(() => loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "login" })).toThrow(/MEDIA_USER_EMAIL/);
     expect(() => loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "oauth" })).toThrow(/MEDIA_AUTH_MODE/);
     const b = loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "bearer", MEDIA_BEARER_TOKEN: "tok" });
     expect(b.remote).toMatchObject({ authMode: "bearer", bearerToken: "tok" });
+    const l = loadConfig({ MEDIA_API_BASE: "https://m.test", MEDIA_AUTH_MODE: "login", MEDIA_USER_EMAIL: "a@b.c", MEDIA_USER_PASSWORD: "pw" });
+    expect(l.remote).toMatchObject({ authMode: "login", loginPath: "/api/auth/login" });
     expect(loadConfig({ MEDIA_API_BASE: "https://m.test", STREAM_URL_CACHE_TTL_MS: "60000" }).cacheTtl.streamUrlMs).toBe(60_000);
   });
 
@@ -114,6 +118,28 @@ describe("live flow without Supabase", () => {
     expect(up.state.mediaAuthHeaders.length).toBeGreaterThanOrEqual(3);
     expect(up.state.mediaAuthHeaders.every((h) => h.auth === "Bearer static-token")).toBe(true);
     expect(up.state.authCalls).toEqual([]);
+  });
+
+  it("login: caches token from POST loginPath and re-logs in after invalidate", async () => {
+    let logins = 0;
+    const auth = new LoginAuth({
+      loginUrl: "https://m.test/api/auth/login",
+      email: "a@b.c",
+      password: "pw",
+      refreshMarginMs: 60_000,
+      timeoutMs: 1000,
+      now: () => 1_000_000,
+      fetch: (async () => {
+        logins++;
+        return new Response(JSON.stringify({ success: true, token: `tok-${logins}` }), { status: 200 });
+      }) as typeof fetch,
+    });
+    expect(await auth.getAccessToken()).toBe("tok-1");
+    expect(await auth.getAccessToken()).toBe("tok-1");
+    expect(logins).toBe(1);
+    auth.invalidate("tok-1");
+    expect(await auth.getAccessToken()).toBe("tok-2");
+    expect(logins).toBe(2);
   });
 });
 

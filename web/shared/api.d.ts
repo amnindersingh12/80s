@@ -167,7 +167,7 @@ export interface HealthResponse {
   recommendations: Record<RecommendationSource, boolean>;
   cache: "memory" | "redis";
   /** How the server authenticates to MEDIA_API_BASE (null when no media server is configured). */
-  mediaAuth: "none" | "bearer" | "supabase" | null;
+  mediaAuth: "none" | "bearer" | "supabase" | "login" | null;
   /**
    * Media-config problems found at boot. Non-empty means the server ignored the media
    * settings and runs in demo mode; `/api/doctor` shows the full details.

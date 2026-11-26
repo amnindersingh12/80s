@@ -34,7 +34,7 @@ export interface JobFieldMap {
   expiresAt: string;
 }
 
-export type MediaAuthMode = "none" | "bearer" | "supabase";
+export type MediaAuthMode = "none" | "bearer" | "supabase" | "login";
 
 export interface SupabaseConfig {
   url: string;
@@ -82,6 +82,8 @@ export interface RemoteProviderConfig {
   bearerToken?: string;
   /** Only used when `authMode` is `supabase`. */
   supabase: SupabaseConfig;
+  /** Only used when `authMode` is `login`. */
+  loginPath: string;
 }
 
 export interface SubsonicConfig {
@@ -281,7 +283,7 @@ export function loadConfig(env: Env = process.env): Config {
     const password = r.str("MEDIA_USER_PASSWORD");
     const refreshToken = r.str("MEDIA_REFRESH_TOKEN");
     const bearerToken = r.str("MEDIA_BEARER_TOKEN");
-    authModeSetting = r.oneOf("MEDIA_AUTH_MODE", ["auto", "none", "bearer", "supabase"] as const, "auto");
+    authModeSetting = r.oneOf("MEDIA_AUTH_MODE", ["auto", "none", "bearer", "supabase", "login"] as const, "auto");
     // auto: log in with Supabase when login credentials exist, otherwise guest (no auth).
     const hasLogin = Boolean(refreshToken || (email && password));
     authMode = authModeSetting === "auto" ? (hasLogin ? "supabase" : "none") : authModeSetting;
@@ -293,6 +295,9 @@ export function loadConfig(env: Env = process.env): Config {
       if (!refreshToken && !(email && password)) {
         r.problems.push("MEDIA_AUTH_MODE=supabase needs MEDIA_USER_EMAIL + MEDIA_USER_PASSWORD (and/or MEDIA_REFRESH_TOKEN)");
       }
+    }
+    if (authMode === "login" && !(email && password)) {
+      r.problems.push("MEDIA_AUTH_MODE=login needs MEDIA_USER_EMAIL + MEDIA_USER_PASSWORD");
     }
     if (authMode === "bearer" && !bearerToken) r.problems.push("MEDIA_BEARER_TOKEN is required when MEDIA_AUTH_MODE=bearer");
     const method = r.oneOf("MEDIA_JOB_CREATE_METHOD", ["POST", "PUT", "GET"] as const, "POST");
@@ -340,6 +345,7 @@ export function loadConfig(env: Env = process.env): Config {
         refreshMarginMs: r.int("MEDIA_TOKEN_REFRESH_MARGIN_MS", 60_000, 0),
         timeoutMs: requestTimeoutMs,
       },
+      loginPath: r.path("MEDIA_LOGIN_PATH", "/api/auth/login"),
     };
   } else if (r.str("SUPABASE_URL") || r.str("MEDIA_USER_EMAIL")) {
     r.problems.push(

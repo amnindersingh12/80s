@@ -318,7 +318,8 @@ served from that same origin, never to R2 or a CDN.
 |---|---|---|
 | `MEDIA_API_BASE` | – | media server base URL (enables the primary provider, live mode) |
 | `MEDIA_FRONTEND_URL` | – | the media site's web page; blank `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `MEDIA_API_BASE` are discovered from its public JS at startup ([details](#zero-devtools-setup-media_frontend_url)) |
-| `MEDIA_AUTH_MODE` | `auto` | `auto`: `supabase` when `MEDIA_USER_EMAIL` + `MEDIA_USER_PASSWORD` (or `MEDIA_REFRESH_TOKEN`) are set, else `none` · `supabase`: password/refresh grants · `bearer`: `Authorization: Bearer MEDIA_BEARER_TOKEN` · `none`: no auth header (guest/public API) |
+| `MEDIA_AUTH_MODE` | `auto` | `auto`: `supabase` when `MEDIA_USER_EMAIL` + `MEDIA_USER_PASSWORD` (or `MEDIA_REFRESH_TOKEN`) are set, else `none` · `supabase`: password/refresh grants · `login`: `POST MEDIA_LOGIN_PATH` with `{ email, password }` · `bearer`: `Authorization: Bearer MEDIA_BEARER_TOKEN` · `none`: no auth header (guest/public API) |
+| `MEDIA_LOGIN_PATH` | `/api/auth/login` | login path on `MEDIA_API_BASE` when `MEDIA_AUTH_MODE=login` |
 | `MEDIA_BEARER_TOKEN` | – | static token for `MEDIA_AUTH_MODE=bearer` |
 | `MEDIA_SEARCH_PATH` | `/api/search` | search endpoint |
 | `MEDIA_SEARCH_PARAM` | `q` | query parameter name |

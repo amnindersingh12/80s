@@ -1,8 +1,9 @@
+import { LoginAuth } from "./auth/login.js";
 import { NoAuth, StaticBearer } from "./auth/static.js";
 import { SupabaseAuth } from "./auth/supabase.js";
 import type { Config } from "./config.js";
 import { createCache, type CacheStore } from "./lib/cache.js";
-import type { FetchFn } from "./lib/http.js";
+import { joinUrl, type FetchFn } from "./lib/http.js";
 import { CachedProvider } from "./providers/cached.js";
 import { ProviderChain } from "./providers/chain.js";
 import { MockAudioProvider } from "./providers/mock.js";
@@ -75,9 +76,18 @@ export async function createServices(config: Config, overrides: ServiceOverrides
               fetch: fetchFn,
               onError: (err) => log?.warn({ err: describe(err) }, "media server token refresh failed"),
             })
-          : r.authMode === "bearer"
-            ? new StaticBearer(r.bearerToken ?? "")
-            : new NoAuth();
+          : r.authMode === "login"
+            ? new LoginAuth({
+                loginUrl: joinUrl(r.baseUrl, r.loginPath),
+                email: r.supabase.email ?? "",
+                password: r.supabase.password ?? "",
+                refreshMarginMs: r.supabase.refreshMarginMs,
+                timeoutMs: r.requestTimeoutMs,
+                fetch: fetchFn,
+              })
+            : r.authMode === "bearer"
+              ? new StaticBearer(r.bearerToken ?? "")
+              : new NoAuth();
       primary = new RemoteMediaProvider({ config: config.remote, auth, fetch: fetchFn });
     } else if (config.subsonic) {
       primary = new SubsonicProvider(config.subsonic, { fetch: fetchFn });

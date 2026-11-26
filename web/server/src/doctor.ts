@@ -14,7 +14,8 @@ import { pathToFileURL } from "node:url";
 import { ConfigError, loadConfig, type Config, type Env, type TrackFieldMap } from "./config.js";
 import { applyDiscovery, discoverFrontend, jwtPayload, needsDiscovery, type DiscoveryResult } from "./lib/discovery.js";
 import { loadDotEnv } from "./lib/env.js";
-import { getPath, pickArray } from "./lib/fields.js";
+import { getPath, pickArray, pickString } from "./lib/fields.js";
+import { joinUrl } from "./lib/http.js";
 
 type Status = "ok" | "warn" | "fail" | "skip";
 
@@ -235,6 +236,10 @@ class Doctor {
       this.line("ok", `MEDIA_AUTH_MODE=bearer — static MEDIA_BEARER_TOKEN ${mask(accessToken ?? "")} (validated by the search below)`);
       this.record("auth", "ok");
       authUsable = true;
+    } else if (remote.authMode === "login") {
+      this.detail(`MEDIA_AUTH_MODE=login (${remote.loginPath})`);
+      accessToken = await this.checkLogin(remote);
+      authUsable = accessToken !== undefined;
     } else {
       this.detail("MEDIA_AUTH_MODE=supabase");
       accessToken = await this.checkSupabase(remote.supabase);
@@ -298,6 +303,24 @@ class Doctor {
     if (status === "fail") this.line("fail", `Couldn't load ${frontend}`);
     this.record("discovery", status);
     return env;
+  }
+
+  private async checkLogin(remote: NonNullable<Config["remote"]>): Promise<string | undefined> {
+    const loginUrl = joinUrl(remote.baseUrl, remote.loginPath);
+    const res = await this.http(loginUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: remote.supabase.email, password: remote.supabase.password }),
+    });
+    const token = pickString(res.json, "token|access_token|data.token|data.access_token");
+    if (res.status >= 200 && res.status < 300 && token) {
+      this.line("ok", `Login → HTTP ${res.status} in ${res.ms} ms (token ${mask(token)})`);
+      this.record("auth", "ok");
+      return token;
+    }
+    this.reportFailure("Login", res, [remote.supabase.password]);
+    this.record("auth", "fail");
+    return undefined;
   }
 
   private async checkSupabase(sb: NonNullable<Config["remote"]>["supabase"]): Promise<string | undefined> {
