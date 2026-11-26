@@ -23,8 +23,9 @@ const SOURCE_WEIGHT: Record<RecommendationSource, number> = { lastfm: 1, listenb
 
 /** Search-friendly aliases for common genre / regional seeds. */
 const TAG_ALIASES: Record<string, string[]> = {
-  "punjabi pop": ["punjabi", "bhangra", "punjabi pop"],
-  punjabi: ["punjabi", "bhangra"],
+  "punjabi pop": ["punjabi", "bhangra", "punjabi pop", "punjabi hip hop", "sidhu moose wala"],
+  punjabi: ["punjabi", "bhangra", "punjabi pop"],
+  bhangra: ["bhangra", "punjabi", "desi"],
   "hip-hop": ["hip hop", "hip-hop", "rap"],
   hiphop: ["hip hop", "rap"],
   "hip hop": ["hip hop", "rap"],
@@ -33,7 +34,7 @@ const TAG_ALIASES: Record<string, string[]> = {
   lofi: ["lo-fi", "lofi", "chillhop"],
   synthwave: ["synthwave", "retrowave", "outrun"],
   "r&b": ["rnb", "r&b", "contemporary r&b"],
-  bollywood: ["bollywood", "filmi"],
+  bollywood: ["bollywood", "hindi pop", "indian pop", "filmi"],
   "80s": ["80s", "new wave", "synth-pop"],
 };
 
@@ -135,10 +136,47 @@ export class RecommendationEngine {
           }));
     if (matchFailed) warnings.push("Could not check availability for some tracks; the media server did not answer.");
 
+    const finalTracks = [...relatedTracks];
+    if (this.deps.maxMatchLookups !== undefined && finalTracks.filter((t) => t.availability === "playable").length < Math.min(8, limit)) {
+      const q = resolved.type === "tag" ? (expandTag(resolved.tag as string)[0] ?? resolved.tag!) : (resolved.artist ?? resolved.label);
+      const seen = new Set(finalTracks.map((t) => t.key));
+      const backfill = await this.deps.chain.search(q, { limit }).catch(() => null);
+      for (const t of backfill?.tracks ?? []) {
+        if (finalTracks.length >= limit) break;
+        const k = trackKey(t.artist, t.title);
+        if (seen.has(k) || k === seedKey) continue;
+        seen.add(k);
+        finalTracks.push({
+          key: k,
+          title: t.title,
+          artist: t.artist,
+          ...(t.album ? { album: t.album } : {}),
+          ...(t.durationSec ? { durationSec: t.durationSec } : {}),
+          coverUrl: t.coverUrl,
+          score: 0.45,
+          sources: ["listenbrainz"],
+          reason: resolved.type === "tag" ? `Top ${resolved.label}` : `Related to ${resolved.label}`,
+          availability: "playable",
+          track: t,
+        });
+      }
+    }
+    if (similarArtists.length < 6 && finalTracks.length > 0) {
+      const seenArtists = new Set(similarArtists.map((a) => normalizeText(a.name)));
+      for (const t of finalTracks) {
+        if (similarArtists.length >= 12) break;
+        const primary = splitArtists(t.artist)[0] ?? t.artist;
+        const ak = normalizeText(primary);
+        if (!ak || seenArtists.has(ak) || (resolved.artist && artistSimilarity(primary, resolved.artist) >= 0.9)) continue;
+        seenArtists.add(ak);
+        similarArtists.push({ name: primary, score: t.score * 0.5, sources: t.sources, playable: t.availability === "playable", ...(t.coverUrl ? { imageUrl: t.coverUrl } : {}) });
+      }
+    }
+
     return {
       seed: { ...seed, ...pick(resolved), label: resolved.label },
       similarArtists,
-      relatedTracks,
+      relatedTracks: finalTracks,
       tags: pool.tags,
       sources: pool.sources,
       warnings,

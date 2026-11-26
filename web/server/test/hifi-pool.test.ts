@@ -48,6 +48,7 @@ describe("HiFiPoolProvider", () => {
 
     const src = await pool.getStreamUrl("123");
     expect(src).toMatchObject({ url: "https://b.hifi.test/track/123", mimeType: "audio/flac", extension: "flac" });
+    expect(await pool.getTrackMetadata("123")).toMatchObject({ id: "123", title: "One More Time", artist: "Daft Punk" });
 
     // After 45s cooldown expires, a.hifi.test is eligible again in round-robin
     t += 46_000;

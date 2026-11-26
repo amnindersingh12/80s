@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.constants.CommonPreferencesConstants
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.models.PageData
 import app.simple.felicity.repository.models.Playlist
@@ -73,7 +74,16 @@ class PlaylistViewerViewModel @AssistedInject constructor(
                     Log.d(TAG, "  - Songs: ${pageData.songs.size}, load time: $loadTime ms")
 
                     _currentPlaylist.value = currentPlaylist
-                    _data.value = pageData.copy(songs = pageData.songs.sortedByPlaylist(currentPlaylist))
+                    val visibleSongs = if (RemoteServerPreferences.isOnlineMode()) {
+                        pageData.songs
+                            .sortedBy { it.uri.startsWith("http") }
+                            .distinctBy { a ->
+                                "${a.artist?.trim()?.lowercase().orEmpty()}|${a.title?.trim()?.lowercase().orEmpty()}".takeIf { it != "|" } ?: a.uri
+                            }
+                    } else {
+                        pageData.songs.filterNot { it.uri.startsWith("http") }
+                    }
+                    _data.value = pageData.copy(songs = visibleSongs.sortedByPlaylist(currentPlaylist))
                 }
         }
     }

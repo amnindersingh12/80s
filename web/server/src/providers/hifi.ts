@@ -39,6 +39,7 @@ export class HiFiPoolProvider implements AudioProvider {
   private readonly fetchFn: FetchFn;
   private readonly now: () => number;
   private readonly openUntil = new Map<string, number>();
+  private readonly metaCache = new Map<string, ProviderTrack>();
   private rrIndex = 0;
 
   constructor(options: HiFiPoolOptions) {
@@ -95,8 +96,8 @@ export class HiFiPoolProvider implements AudioProvider {
       : new AppError("UPSTREAM_UNAVAILABLE", "All HiFi instances are unavailable", { provider: this.name, cause: lastErr });
   }
 
-  async getTrackMetadata(_id: string): Promise<ProviderTrack | null> {
-    return null;
+  async getTrackMetadata(id: string): Promise<ProviderTrack | null> {
+    return this.metaCache.get(id) ?? null;
   }
 
   async getStreamUrl(id: string, options: StreamOptions = {}): Promise<StreamSource> {
@@ -117,8 +118,15 @@ export class HiFiPoolProvider implements AudioProvider {
             lastErr = new AppError("UPSTREAM_UNAVAILABLE", check.reason ?? "Lossy stream rejected", { provider: this.name });
             continue;
           }
+          const rangeMatch = res.headers.get("content-range")?.match(/\/(\d+)\s*$/);
+          const contentLength = rangeMatch ? Number(rangeMatch[1]) : undefined;
           this.openUntil.delete(base);
-          return { url: streamUrl, mimeType: check.mimeType ?? "audio/flac", extension: check.extension ?? "flac" };
+          return {
+            url: streamUrl,
+            mimeType: check.mimeType ?? "audio/flac",
+            extension: check.extension ?? "flac",
+            ...(contentLength !== undefined ? { contentLength } : {}),
+          };
         }
         await res.body?.cancel().catch(() => undefined);
         if (res.status === 404) {
@@ -165,7 +173,7 @@ export class HiFiPoolProvider implements AudioProvider {
       (typeof raw.artist === "string" ? raw.artist : raw.artist?.name) ??
       "Unknown artist";
     const dur = typeof raw.duration === "number" ? (raw.duration > 36_000 ? Math.round(raw.duration / 1000) : Math.round(raw.duration)) : undefined;
-    return {
+    const track: ProviderTrack = {
       id: String(id),
       provider: this.name,
       title: raw.title,
@@ -177,5 +185,11 @@ export class HiFiPoolProvider implements AudioProvider {
       lossless: true,
       ...(raw.isrc ? { isrc: raw.isrc } : {}),
     };
+    if (this.metaCache.size >= 500) {
+      const oldest = this.metaCache.keys().next().value;
+      if (oldest !== undefined) this.metaCache.delete(oldest);
+    }
+    this.metaCache.set(track.id, track);
+    return track;
   }
 }

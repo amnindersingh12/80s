@@ -2092,7 +2092,7 @@ class FelicityPlayerService : MediaLibraryService(), SharedPreferences.OnSharedP
                 if (currentSong != null) {
                     val newFavoriteState = !currentSong.isFavorite
                     serviceScope.launch(Dispatchers.IO) {
-                        audioRepository.setFavorite(currentSong.id, newFavoriteState)
+                        audioRepository.setFavorite(currentSong, newFavoriteState)
                         // Update the in-memory Audio object so the button reflects the new state
                         // without waiting for the next database read to come through.
                         currentSong.isFavorite = newFavoriteState

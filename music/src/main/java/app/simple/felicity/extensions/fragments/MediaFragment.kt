@@ -63,6 +63,7 @@ import app.simple.felicity.repository.models.Artist
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.models.AudioBookmark
 import app.simple.felicity.repository.models.PlaylistWithSongs
+import app.simple.felicity.repository.repositories.AudioRepository
 import app.simple.felicity.repository.repositories.LrcRepository
 import app.simple.felicity.repository.shuffle.Shuffle.smartShuffle
 import app.simple.felicity.repository.sort.PageSort.sortedForAlbumPage
@@ -687,7 +688,7 @@ open class MediaFragment : KeyboardScopedFragment(), MiniPlayerPolicy {
                 binding.addToFavorites.setOnClickListener {
                     viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
                         val newFav = !audio.isFavorite
-                        AudioDatabase.getInstance(requireContext()).audioDao()?.setFavorite(audio.id, newFav)
+                        AudioRepository(requireContext().applicationContext).setFavorite(audio, newFav)
                         audio.isFavorite = newFav
 
                         // `audio` here may be a completely different Audio instance than the one
@@ -828,7 +829,7 @@ open class MediaFragment : KeyboardScopedFragment(), MiniPlayerPolicy {
         val audio = MediaPlaybackManager.getCurrentSong() ?: return
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
             val newFavorite = !audio.isFavorite
-            AudioDatabase.getInstance(requireContext()).audioDao()?.setFavorite(audio.id, newFavorite)
+            AudioRepository(requireContext().applicationContext).setFavorite(audio, newFavorite)
             audio.isFavorite = newFavorite
             withContext(Dispatchers.Main) {
                 MediaPlaybackManager.notifyCurrentSongUpdated()

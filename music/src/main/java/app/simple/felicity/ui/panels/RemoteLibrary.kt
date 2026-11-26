@@ -22,6 +22,7 @@ import app.simple.felicity.adapters.remote.RemoteTrackCallbacks
 import app.simple.felicity.databinding.FragmentRemoteLibraryBinding
 import app.simple.felicity.decorations.popups.PopupMenuItem
 import app.simple.felicity.decorations.popups.SharedScrollViewPopup
+import app.simple.felicity.dialogs.playlists.AddToPlaylistDialog.Companion.showAddToPlaylistDialog
 import app.simple.felicity.engine.managers.MediaPlaybackManager
 import app.simple.felicity.extensions.fragments.PanelFragment
 import app.simple.felicity.preferences.RemoteServerPreferences
@@ -109,7 +110,15 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                 }
                 launch { remote.events.collect(::onEvent) }
                 launch {
-                    combine(viewModel.tab, viewModel.search, viewModel.recommendations, viewModel.seed, remote.downloads, viewModel.localKeys) { arr ->
+                    combine(
+                            viewModel.tab,
+                            viewModel.search,
+                            viewModel.recommendations,
+                            viewModel.seed,
+                            remote.downloads,
+                            viewModel.localKeys,
+                            viewModel.searchHistory,
+                    ) { arr ->
                         arr[0] as RemoteTab
                     }.collect { tab ->
                         showTab(tab)
@@ -129,8 +138,8 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
 
     override fun onResume() {
         super.onResume()
-        // Coming back from the settings screen: pick up a new/removed server.
-        viewModel.refreshHealth()
+        // Coming back from the settings screen: pick up a new/removed server without hammering /api/health.
+        viewModel.refreshHealth(force = false)
         render()
     }
 
@@ -255,7 +264,27 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     }
 
     private fun searchItems(): List<RemoteItem> = when (val s = viewModel.search.value) {
-        Loadable.Idle -> listOf(RemoteItem.Message(getString(R.string.remote_search_empty)))
+        Loadable.Idle -> {
+            val history = viewModel.searchHistory.value
+            if (history.isEmpty()) {
+                listOf(RemoteItem.Message(getString(R.string.remote_search_empty)))
+            } else {
+                listOf(
+                        RemoteItem.Section(
+                                getString(R.string.remote_recent_searches),
+                                actionText = getString(R.string.remote_clear_history),
+                        ) { viewModel.clearSearchHistory() },
+                        RemoteItem.Chips(
+                                history.map { q ->
+                                    RemoteItem.Chip(q, q) {
+                                        binding.searchInput.setText(q)
+                                        binding.searchInput.setSelection(q.length)
+                                    }
+                                },
+                        ),
+                )
+            }
+        }
         Loadable.Loading -> listOf(RemoteItem.Message(loadingText()))
         is Loadable.Failed -> listOf(failure(s) { viewModel.retrySearch() })
         is Loadable.Loaded -> searchResults(s.value)
@@ -264,8 +293,8 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     private fun searchResults(result: SearchResult): List<RemoteItem> {
         if (result.tracks.isEmpty()) return listOf(RemoteItem.Message(getString(R.string.remote_no_results)))
         val subtitle = listOfNotNull(result.provider, if (result.fallback) "fallback" else null).joinToString(" · ").ifBlank { null }
-        return listOf(RemoteItem.Section("${result.tracks.size} · ${result.query}", subtitle, getString(R.string.remote_add_to_queue)) {
-            remote.enqueue(result.tracks)
+        return listOf(RemoteItem.Section("${result.tracks.size} · ${result.query}", subtitle, getString(R.string.remote_shuffle_play)) {
+            remote.playAll(result.tracks, shuffle = true)
         }) + result.tracks.map(::trackItem)
     }
 
@@ -346,8 +375,8 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
             items += RemoteItem.Section(
                     getString(R.string.remote_recommended_songs),
                     "${trackItems.size} lossless tracks",
-                    if (playable.isNotEmpty()) getString(R.string.remote_add_to_queue) else null,
-            ) { remote.enqueue(playable) }
+                    if (playable.isNotEmpty()) getString(R.string.remote_shuffle_play) else null,
+            ) { remote.playAll(playable, shuffle = true) }
             items += trackItems
         } else {
             items += RemoteItem.Message(getString(R.string.remote_no_results))
@@ -414,6 +443,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                         PopupMenuItem(title = R.string.remote_play_now, icon = R.drawable.ic_play),
                         PopupMenuItem(title = R.string.remote_play_next, icon = R.drawable.ic_queue),
                         PopupMenuItem(title = R.string.remote_add_to_queue, icon = R.drawable.ic_add_to_queue),
+                        PopupMenuItem(title = R.string.remote_add_to_playlist, icon = R.drawable.ic_add_to_playlist),
                         PopupMenuItem(title = R.string.remote_start_track_radio, icon = R.drawable.ic_radio),
                         PopupMenuItem(title = R.string.remote_similar_artists, icon = R.drawable.ic_people),
                         PopupMenuItem(title = R.string.remote_download, icon = R.drawable.ic_download),
@@ -423,6 +453,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                         R.string.remote_play_now -> onPlay(track)
                         R.string.remote_play_next -> remote.playNext(track)
                         R.string.remote_add_to_queue -> remote.enqueue(listOf(track))
+                        R.string.remote_add_to_playlist -> parentFragmentManager.showAddToPlaylistDialog(remote.toAudio(track))
                         R.string.remote_start_track_radio -> {
                             lastRequested = track
                             remote.startRadio(RecommendationSeed.track(track), "${track.artist} – ${track.title}", startWith = track)

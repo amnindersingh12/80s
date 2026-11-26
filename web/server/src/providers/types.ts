@@ -27,6 +27,8 @@ export interface StreamSource {
   mimeType?: string;
   /** File extension used for downloads (`flac`). */
   extension?: string;
+  /** Total byte length learned during stream probing (avoids an extra HEAD round-trip). */
+  contentLength?: number;
 }
 
 export interface SearchOptions {

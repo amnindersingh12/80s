@@ -9,11 +9,17 @@ import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.preferences.SAFPreferences
+import app.simple.felicity.remote.FlacTagWriter
 import app.simple.felicity.remote.RemoteTrack
 import app.simple.felicity.remote.WebApiClient
 import app.simple.felicity.repository.services.AudioDatabaseService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 
 sealed interface DownloadResult {
     data class Saved(val displayName: String, val folderName: String) : DownloadResult
@@ -42,45 +48,105 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
         val folder = targetFolder()
             ?: return DownloadResult.Failed("Add a music folder in Library → Music folders first", needsFolder = true)
 
+        val partDir = File(context.cacheDir, "dl_parts").apply { mkdirs() }
+        pruneStaleParts(partDir)
+        val partFile = File(partDir, "${sha256Prefix(track.id)}.part")
+        var resolvedName = "${track.artist} - ${track.title}.${RemoteAudioMapper.extensionFor(track)}"
+        var resolvedMime = RemoteAudioMapper.mimeFor(track)
+
         return try {
-            api.download(track) { info, input ->
-                folder.findFile(info.filename)?.takeIf { it.isFile && it.length() > 0 }?.let {
-                    return@download DownloadResult.AlreadyExists(info.filename)
-                }
-                val mime = info.contentType?.substringBefore(';')?.trim().takeUnless { it.isNullOrBlank() || it == "application/octet-stream" }
-                    ?: RemoteAudioMapper.mimeFor(track)
-                // DocumentFile appends an extension from the MIME type, so give it the bare name.
-                val bare = info.filename.substringBeforeLast('.', info.filename)
-                val file = folder.createFile(mime, bare) ?: throw IOException("Could not create the file in ${folder.name}")
-                try {
-                    context.contentResolver.openOutputStream(file.uri, "w")?.use { out ->
-                        val buffer = ByteArray(64 * 1024)
-                        var total = 0L
-                        var lastReport = 0L
-                        while (true) {
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            out.write(buffer, 0, n)
-                            total += n
-                            if (total - lastReport > 256 * 1024) {
-                                lastReport = total
-                                onProgress(if (info.contentLength > 0) total.toFloat() / info.contentLength else null)
+            var attempt = 0
+            while (true) {
+                val resumeFrom = if (partFile.isFile) partFile.length() else 0L
+                val result = runCatching {
+                    api.download(track, rangeStart = resumeFrom) { info, input ->
+                        resolvedName = info.filename
+                        resolvedMime = info.contentType?.substringBefore(';')?.trim()
+                            .takeUnless { it.isNullOrBlank() || it == "application/octet-stream" }
+                            ?: RemoteAudioMapper.mimeFor(track)
+
+                        folder.findFile(info.filename)?.takeIf { it.isFile && it.length() > 0 }?.let {
+                            partFile.delete()
+                            return@download DownloadResult.AlreadyExists(info.filename)
+                        }
+
+                        val append = info.isPartial && resumeFrom > 0L
+                        var total = if (append) resumeFrom else 0L
+                        val expectedTotal = info.totalLength.takeIf { it > 0 } ?: -1L
+                        var lastReport = total
+                        FileOutputStream(partFile, append).use { out ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buffer)
+                                if (n < 0) break
+                                out.write(buffer, 0, n)
+                                total += n
+                                if (total - lastReport > 256 * 1024) {
+                                    lastReport = total
+                                    onProgress(if (expectedTotal > 0) (total.toFloat() / expectedTotal).coerceIn(0f, 0.98f) else null)
+                                }
                             }
                         }
-                    } ?: throw IOException("Could not open the file for writing")
-                } catch (e: Exception) {
-                    file.delete() // never leave a half-written track in the library
-                    throw e
+                        null
+                    }
                 }
-                onProgress(1f)
-                notifyLibrary(file.uri)
-                DownloadResult.Saved(file.name ?: info.filename, folder.name ?: "Music")
+                val already = result.getOrNull()
+                if (already != null) return already
+                if (result.isSuccess) break
+                val err = result.exceptionOrNull()!!
+                if (err is kotlinx.coroutines.CancellationException) throw err
+                if (++attempt >= MAX_RESUME_ATTEMPTS) throw err
+                delay(1_200L * attempt)
             }
+
+            if (resolvedMime.contains("flac", ignoreCase = true) || resolvedName.endsWith(".flac", ignoreCase = true)) {
+                val cover = track.coverUrl?.let { api.fetchSmallAsset(it) }
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        FlacTagWriter.embedIfMissing(
+                                file = partFile,
+                                track = track,
+                                coverBytes = cover?.second,
+                                coverMime = cover?.first ?: "image/jpeg",
+                        )
+                    }
+                }
+            }
+
+            val bare = resolvedName.substringBeforeLast('.', resolvedName)
+            val file = folder.createFile(resolvedMime, bare) ?: throw IOException("Could not create the file in ${folder.name}")
+            try {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(file.uri, "w")?.use { out ->
+                        partFile.inputStream().use { input -> input.copyTo(out, bufferSize = 64 * 1024) }
+                    } ?: throw IOException("Could not open the file for writing")
+                }
+            } catch (e: Exception) {
+                file.delete()
+                throw e
+            }
+            partFile.delete()
+            onProgress(1f)
+            notifyLibrary(file.uri)
+            DownloadResult.Saved(file.name ?: resolvedName, folder.name ?: "Music")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
             DownloadResult.Failed(e.message ?: "Download failed")
         }
+    }
+
+    private fun sha256Prefix(id: String): String =
+        MessageDigest.getInstance("SHA-256").digest(id.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }.take(24)
+
+    private fun pruneStaleParts(dir: File) {
+        val cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+        dir.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
+    }
+
+    companion object {
+        private const val MAX_RESUME_ATTEMPTS = 3
     }
 
     private fun notifyLibrary(documentUri: Uri) {

@@ -11,12 +11,15 @@ import app.simple.felicity.theme.managers.ThemeManager
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.target.CustomTarget
 import com.bumptech.glide.request.transition.Transition
+import java.util.WeakHashMap
 
 /**
  * Extracts a vibrant/dominant accent color from album artwork without extra dependencies,
  * and paints smooth Spotify/Apple Music-style ambient vertical gradients.
  */
 object ArtworkColorHelper {
+
+    private val activeRequests = WeakHashMap<View, String>()
 
     fun extractDominantColor(bitmap: Bitmap, fallback: Int = ThemeManager.accent.primaryAccentColor): Int {
         val scaled = Bitmap.createScaledBitmap(bitmap, 16, 16, true)
@@ -50,16 +53,20 @@ object ArtworkColorHelper {
     }
 
     fun tintFromUrl(context: Context, url: String?, target: View, alphaFraction: Float = 0.34f) {
-        if (url.isNullOrBlank()) {
+        val key = url?.takeIf { it.isNotBlank() }
+        synchronized(activeRequests) { activeRequests[target] = key.orEmpty() }
+        if (key == null) {
             applyAmbientGradient(target, ThemeManager.accent.primaryAccentColor, alphaFraction * 0.6f)
             return
         }
         Glide.with(context.applicationContext)
             .asBitmap()
-            .load(url)
+            .load(key)
             .override(64, 64)
             .into(object : CustomTarget<Bitmap>() {
                 override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
+                    val stillMatches = synchronized(activeRequests) { activeRequests[target] == key }
+                    if (!stillMatches) return
                     applyAmbientGradient(target, extractDominantColor(resource), alphaFraction)
                 }
 

@@ -661,4 +661,8 @@
     <string name="remote_picked_for_you">Picked for you</string>
     <string name="remote_lossless_details_title">Lossless Audio Details</string>
     <string name="remote_lossless_verified">Verified Lossless (FLAC / ALAC only)</string>
+    <string name="remote_recent_searches">Recent searches</string>
+    <string name="remote_clear_history">Clear history</string>
+    <string name="remote_shuffle_play">Shuffle all</string>
+    <string name="remote_add_to_playlist">Add to playlist</string>
 </resources>

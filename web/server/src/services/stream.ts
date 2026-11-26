@@ -19,8 +19,8 @@ export interface StreamProxyDeps {
 /** Upstream headers forwarded verbatim so browser seeking and caching work. */
 const PASSTHROUGH_HEADERS = ["content-length", "content-range", "accept-ranges", "etag", "last-modified"] as const;
 const GENERIC_TYPES = new Set(["", "application/octet-stream", "binary/octet-stream", "application/x-download", "application/force-download"]);
-/** Statuses that usually mean "the signed URL expired / was revoked": re-resolve once. */
-const STALE_URL_STATUSES = new Set([401, 403, 404, 410]);
+/** Statuses that usually mean the signed URL expired or that instance needs failover: re-resolve once. */
+const STALE_URL_STATUSES = new Set([401, 403, 404, 410, 429, 500, 502, 503, 504]);
 
 class HeaderTimeout extends Error {}
 class ClientGone extends Error {}
@@ -54,6 +54,23 @@ export async function proxyAudio(
     ? request.headers.range
     : undefined;
   const upstreamRange = isHead ? "bytes=0-0" : rangeHeader;
+
+  if (isHead) {
+    const resolved = await deps.tracker.ensure(id);
+    if (resolved.source.contentLength !== undefined) {
+      const ext = resolved.source.extension ?? "flac";
+      const contentType = resolved.source.mimeType ?? MIME_BY_EXTENSION[ext] ?? "audio/flac";
+      return reply
+        .code(200)
+        .header("content-type", contentType)
+        .header("content-length", resolved.source.contentLength)
+        .header("accept-ranges", "bytes")
+        .header("cache-control", "private, max-age=3600, no-transform")
+        .header("x-content-type-options", "nosniff")
+        .header("x-served-by", resolved.servedBy.name)
+        .send();
+    }
+  }
 
   const clientGone = new AbortController();
   const onClose = () => {
@@ -142,7 +159,17 @@ async function openUpstream(
   clientGone: AbortSignal,
 ): Promise<Upstream> {
   let resolved = await deps.tracker.ensure(id);
-  let res = await fetchSource(request, deps, resolved, range, clientGone);
+  let res: Response;
+  try {
+    res = await fetchSource(request, deps, resolved, range, clientGone);
+  } catch (err) {
+    if (clientGone.aborted || !(err instanceof AppError) || (err.code !== "UPSTREAM_TIMEOUT" && err.code !== "UPSTREAM_UNAVAILABLE")) {
+      throw err;
+    }
+    await deps.chain.invalidateStream(resolved);
+    resolved = await deps.tracker.ensure(id);
+    res = await fetchSource(request, deps, resolved, range, clientGone);
+  }
   if (STALE_URL_STATUSES.has(res.status)) {
     await res.body?.cancel().catch(() => undefined);
     await deps.chain.invalidateStream(resolved);

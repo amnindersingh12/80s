@@ -30,7 +30,13 @@ interface PrepareApi {
 }
 
 /** Metadata for a download that is about to be streamed to disk. */
-data class DownloadInfo(val filename: String, val contentType: String?, val contentLength: Long)
+data class DownloadInfo(
+    val filename: String,
+    val contentType: String?,
+    val contentLength: Long,
+    val isPartial: Boolean = false,
+    val totalLength: Long = contentLength,
+)
 
 /**
  * Typed client for the `web/` Fastify API.
@@ -198,17 +204,39 @@ class WebApiClient(
      * `Content-Disposition`, e.g. `Artist - Title.flac`) and the body stream; whatever it
      * returns is returned here. The response is always closed afterwards.
      */
-    suspend fun <T> download(track: RemoteTrack, sink: suspend (DownloadInfo, InputStream) -> T): T {
-        val request = Request.Builder().url(downloadUrl(track)).build()
+    suspend fun <T> download(track: RemoteTrack, rangeStart: Long = 0L, sink: suspend (DownloadInfo, InputStream) -> T): T {
+        val request = Request.Builder().url(downloadUrl(track)).apply {
+            if (rangeStart > 0L) header("Range", "bytes=$rangeStart-")
+        }.build()
         val response = await(downloadClient.newCall(request))
         return response.use { res ->
             if (!res.isSuccessful) throw errorFrom(res, res.body.string())
             val ext = res.header("content-type")?.let(::extensionForMime) ?: track.format ?: "flac"
             val name = ContentDisposition.filename(res.header("content-disposition"))
                 ?: ContentDisposition.fallback(track.artist, track.title, ext)
-            val info = DownloadInfo(name, res.header("content-type"), res.body.contentLength())
+            val isPartial = res.code == 206 && rangeStart > 0L
+            val contentLen = res.body.contentLength()
+            val rangeTotal = res.header("content-range")?.substringAfterLast('/')?.toLongOrNull()
+            val totalLen = rangeTotal ?: if (isPartial && contentLen > 0) rangeStart + contentLen else contentLen
+            val info = DownloadInfo(name, res.header("content-type"), contentLen, isPartial = isPartial, totalLength = totalLen)
             withContext(io) { sink(info, res.body.byteStream()) }
         }
+    }
+
+    /** Downloads a small auxiliary asset (e.g. cover artwork up to 1.5 MiB) for tag embedding. */
+    suspend fun fetchSmallAsset(url: String, maxBytes: Int = 1_500_000): Pair<String, ByteArray>? = withContext(io) {
+        runCatching {
+            val req = Request.Builder().url(url).get().build()
+            await(client.newCall(req)).use { res ->
+                if (!res.isSuccessful) return@runCatching null
+                val len = res.body.contentLength()
+                if (len > maxBytes) return@runCatching null
+                val bytes = res.body.bytes()
+                if (bytes.isEmpty() || bytes.size > maxBytes) return@runCatching null
+                val mime = res.header("content-type")?.substringBefore(';')?.trim()?.ifBlank { null } ?: "image/jpeg"
+                mime to bytes
+            }
+        }.getOrNull()
     }
 
     // ------------------------------------------------------------- plumbing ---

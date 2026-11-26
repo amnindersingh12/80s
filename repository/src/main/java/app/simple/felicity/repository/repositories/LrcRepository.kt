@@ -18,7 +18,9 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -93,7 +95,15 @@ class LrcRepository @Inject constructor(
      * an empty cursor (or throws) when the file is absent, and a one-row cursor
      * when it is present. This is much cheaper than listing the whole directory.
      */
+    private fun streamCacheFile(audioUri: String, extension: String): File? {
+        if (!audioUri.startsWith("http://") && !audioUri.startsWith("https://")) return null
+        val digest = MessageDigest.getInstance("SHA-256").digest(audioUri.toByteArray(Charsets.UTF_8))
+        val key = digest.joinToString("") { "%02x".format(it) }.take(32)
+        return File(File(context.filesDir, "stream_lrc"), "$key.$extension")
+    }
+
     private fun siblingExists(audioUri: String, extension: String): Boolean {
+        streamCacheFile(audioUri, extension)?.let { return it.isFile && it.length() > 0 }
         val uri = siblingUri(audioUri, extension) ?: return false
         return try {
             context.contentResolver.query(
@@ -122,6 +132,13 @@ class LrcRepository @Inject constructor(
      * @return The URI of the written sidecar, or null if something went wrong.
      */
     private fun writeSibling(audioUri: String, extension: String, content: String): Uri? {
+        streamCacheFile(audioUri, extension)?.let { f ->
+            return runCatching {
+                f.parentFile?.mkdirs()
+                f.writeText(content, Charsets.UTF_8)
+                Uri.fromFile(f)
+            }.getOrNull()
+        }
         return try {
             val targetUri = siblingUri(audioUri, extension) ?: return null
 
@@ -167,6 +184,10 @@ class LrcRepository @Inject constructor(
      * Quietly does nothing if the sidecar does not exist yet.
      */
     private fun deleteSibling(audioUri: String, extension: String) {
+        streamCacheFile(audioUri, extension)?.let { f ->
+            f.delete()
+            return
+        }
         try {
             if (!siblingExists(audioUri, extension)) {
                 Log.d(TAG, "No .$extension sidecar to delete for: $audioUri")
@@ -189,6 +210,9 @@ class LrcRepository @Inject constructor(
      * Returns null when the sidecar does not exist or is blank.
      */
     private fun readSibling(audioUri: String, extension: String): String? {
+        streamCacheFile(audioUri, extension)?.let { f ->
+            return runCatching { f.takeIf { it.isFile }?.readText(Charsets.UTF_8)?.takeIf { it.isNotBlank() } }.getOrNull()
+        }
         return try {
             val uri = siblingUri(audioUri, extension) ?: return null
             context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -384,10 +408,12 @@ class LrcRepository @Inject constructor(
                     return@withContext Result.success(lrcContent)
                 }
 
-                // Check 2: lyrics baked into the audio file's tags (USLT, ©lyr, Vorbis, etc.).
-                // If we find embedded lyrics we cache them as a sidecar right away so future
-                // plays skip this tag scan and go straight to Check 1 above.
-                val embedded = LyricsMetaHelper.extractEmbeddedLyrics(context, audioUri)
+                // Check 2: lyrics baked into the audio file's tags (skipped for HTTP streams).
+                val embedded = if (audioUri.startsWith("http://") || audioUri.startsWith("https://")) {
+                    null
+                } else {
+                    LyricsMetaHelper.extractEmbeddedLyrics(context, audioUri)
+                }
                 if (!embedded.isNullOrBlank()) {
                     Log.d(TAG, "Found embedded lyrics in tags for: $audioUri — caching as .lrc sidecar.")
                     writeSibling(audioUri, "lrc", embedded)

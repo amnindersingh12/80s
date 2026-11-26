@@ -1,9 +1,10 @@
 package app.simple.felicity.adapters.remote
 
-import android.annotation.SuppressLint
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import app.simple.felicity.R
 import app.simple.felicity.databinding.AdapterRemoteCarouselBinding
@@ -76,19 +77,14 @@ interface RemoteTrackCallbacks {
     fun onDownloadMetadata(title: String, artist: String, album: String?) {}
 }
 
-class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+class AdapterRemote(private val callbacks: RemoteTrackCallbacks) :
+        ListAdapter<RemoteItem, RecyclerView.ViewHolder>(DIFF_CALLBACK) {
 
-    private var items: List<RemoteItem> = emptyList()
-
-    @SuppressLint("NotifyDataSetChanged")
     fun submit(newItems: List<RemoteItem>) {
-        items = newItems
-        notifyDataSetChanged()
+        submitList(newItems)
     }
 
-    override fun getItemCount() = items.size
-
-    override fun getItemViewType(position: Int) = when (items[position]) {
+    override fun getItemViewType(position: Int) = when (getItem(position)) {
         is RemoteItem.Hero -> TYPE_HERO
         is RemoteItem.TrackCarousel -> TYPE_TRACK_CAROUSEL
         is RemoteItem.ArtistCarousel -> TYPE_ARTIST_CAROUSEL
@@ -112,7 +108,7 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-        when (val item = items[position]) {
+        when (val item = getItem(position)) {
             is RemoteItem.Hero -> (holder as HeroHolder).bind(item)
             is RemoteItem.TrackCarousel -> (holder as TrackCarouselHolder).bind(item)
             is RemoteItem.ArtistCarousel -> (holder as ArtistCarouselHolder).bind(item)
@@ -121,6 +117,17 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
             is RemoteItem.Chips -> (holder as ChipsHolder).bind(item)
             is RemoteItem.Message -> (holder as MessageHolder).bind(item)
         }
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_TRACK_STATE) && holder is TrackHolder) {
+            val item = getItem(position) as? RemoteItem.Track
+            if (item != null) {
+                holder.bindPlaybackAndDownloadState(item)
+                return
+            }
+        }
+        super.onBindViewHolder(holder, position, payloads)
     }
 
     override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
@@ -221,24 +228,6 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
             binding.qualityPill.text = track?.losslessBadge ?: "FLAC"
             binding.qualityPill.visibility = View.VISIBLE
 
-            val dl = item.download
-            val isDownloaded = item.downloaded || dl?.finished == true
-            val isDownloading = dl != null && !dl.finished && dl.error == null
-            binding.tertiaryDetail.text = when {
-                dl?.error != null -> dl.error
-                isDownloaded -> ctx.getString(R.string.remote_downloaded)
-                isDownloading -> ctx.getString(R.string.remote_downloading, ((dl?.progress ?: 0f) * 100).toInt())
-                track == null -> listOfNotNull(ctx.getString(R.string.remote_tap_to_play), item.detail).joinToString(" · ")
-                else -> listOfNotNull(
-                        track.durationSec?.takeIf { it > 0 }?.let { (it * 1000L).toDynamicTimeString() },
-                        item.detail,
-                ).joinToString(" · ")
-            }
-
-            binding.eqBars.visibility = if (item.isPlaying) View.VISIBLE else View.GONE
-            binding.eqBars.setAnimating(item.isPlaying)
-            binding.cover.alpha = if (item.isPlaying) 0.45f else 1f
-
             val coverSource: Any? = item.audio ?: item.coverUrl
             if (coverSource != null) {
                 Glide.with(binding.cover)
@@ -252,6 +241,30 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
             } else {
                 binding.cover.setImageResource(R.drawable.ic_song)
             }
+
+            bindPlaybackAndDownloadState(item)
+        }
+
+        fun bindPlaybackAndDownloadState(item: RemoteItem.Track) {
+            val ctx = binding.root.context
+            val track = item.track
+            val dl = item.download
+            val isDownloaded = item.downloaded || dl?.finished == true
+            val isDownloading = dl != null && !dl.finished && dl.error == null
+            binding.tertiaryDetail.text = when {
+                dl?.error != null -> dl.error
+                isDownloaded -> ctx.getString(R.string.remote_downloaded)
+                isDownloading -> ctx.getString(R.string.remote_downloading, ((dl.progress ?: 0f) * 100).toInt())
+                track == null -> listOfNotNull(ctx.getString(R.string.remote_tap_to_play), item.detail).joinToString(" · ")
+                else -> listOfNotNull(
+                        track.durationSec?.takeIf { it > 0 }?.let { (it * 1000L).toDynamicTimeString() },
+                        item.detail,
+                ).joinToString(" · ")
+            }
+
+            binding.eqBars.visibility = if (item.isPlaying) View.VISIBLE else View.GONE
+            binding.eqBars.setAnimating(item.isPlaying)
+            binding.cover.alpha = if (item.isPlaying) 0.45f else 1f
 
             binding.downloadProgress.visibility = if (isDownloading) View.VISIBLE else View.GONE
             binding.action.visibility = if (isDownloading) View.INVISIBLE else View.VISIBLE
@@ -315,5 +328,59 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
         private const val TYPE_TRACK = 4
         private const val TYPE_CHIPS = 5
         private const val TYPE_MESSAGE = 6
+        private const val PAYLOAD_TRACK_STATE = "track_state"
+
+        private fun trackKey(t: RemoteItem.Track): String = t.track?.id ?: "${t.artist.lowercase()}|${t.title.lowercase()}"
+
+        private fun visualEquals(a: RemoteItem.Track, b: RemoteItem.Track): Boolean =
+            a.title == b.title &&
+                a.artist == b.artist &&
+                a.track?.id == b.track?.id &&
+                a.detail == b.detail &&
+                a.coverUrl == b.coverUrl &&
+                a.download == b.download &&
+                a.downloaded == b.downloaded &&
+                a.isPlaying == b.isPlaying
+
+        private val DIFF_CALLBACK = object : DiffUtil.ItemCallback<RemoteItem>() {
+            override fun areItemsTheSame(oldItem: RemoteItem, newItem: RemoteItem): Boolean = when {
+                oldItem is RemoteItem.Hero && newItem is RemoteItem.Hero -> true
+                oldItem is RemoteItem.TrackCarousel && newItem is RemoteItem.TrackCarousel -> true
+                oldItem is RemoteItem.ArtistCarousel && newItem is RemoteItem.ArtistCarousel -> true
+                oldItem is RemoteItem.Section && newItem is RemoteItem.Section -> oldItem.title == newItem.title
+                oldItem is RemoteItem.Track && newItem is RemoteItem.Track -> trackKey(oldItem) == trackKey(newItem)
+                oldItem is RemoteItem.Chips && newItem is RemoteItem.Chips -> oldItem.chips.map { it.tag } == newItem.chips.map { it.tag }
+                oldItem is RemoteItem.Message && newItem is RemoteItem.Message -> oldItem.text == newItem.text
+                else -> false
+            }
+
+            override fun areContentsTheSame(oldItem: RemoteItem, newItem: RemoteItem): Boolean = when {
+                oldItem is RemoteItem.Hero && newItem is RemoteItem.Hero ->
+                    oldItem.badge == newItem.badge && visualEquals(oldItem.item, newItem.item)
+                oldItem is RemoteItem.TrackCarousel && newItem is RemoteItem.TrackCarousel ->
+                    oldItem.items.size == newItem.items.size && oldItem.items.zip(newItem.items).all { (x, y) -> visualEquals(x, y) }
+                oldItem is RemoteItem.ArtistCarousel && newItem is RemoteItem.ArtistCarousel ->
+                    oldItem.artists.map { it.name to it.imageUrl } == newItem.artists.map { it.name to it.imageUrl }
+                oldItem is RemoteItem.Section && newItem is RemoteItem.Section ->
+                    oldItem.title == newItem.title && oldItem.subtitle == newItem.subtitle && oldItem.actionText == newItem.actionText
+                oldItem is RemoteItem.Track && newItem is RemoteItem.Track -> visualEquals(oldItem, newItem)
+                oldItem is RemoteItem.Chips && newItem is RemoteItem.Chips ->
+                    oldItem.selectedTag == newItem.selectedTag && oldItem.chips.map { it.label to it.tag } == newItem.chips.map { it.label to it.tag }
+                oldItem is RemoteItem.Message && newItem is RemoteItem.Message ->
+                    oldItem.text == newItem.text && oldItem.actionText == newItem.actionText
+                else -> false
+            }
+
+            override fun getChangePayload(oldItem: RemoteItem, newItem: RemoteItem): Any? {
+                if (oldItem is RemoteItem.Track && newItem is RemoteItem.Track &&
+                        oldItem.title == newItem.title &&
+                        oldItem.artist == newItem.artist &&
+                        oldItem.coverUrl == newItem.coverUrl &&
+                        oldItem.track?.id == newItem.track?.id) {
+                    return PAYLOAD_TRACK_STATE
+                }
+                return null
+            }
+        }
     }
 }

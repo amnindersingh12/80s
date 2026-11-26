@@ -3,6 +3,7 @@ package app.simple.felicity.streaming
 import android.content.Context
 import android.util.Log
 import app.simple.felicity.engine.managers.MediaPlaybackManager
+import app.simple.felicity.engine.managers.RemoteDataSources
 import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.remote.PreparePoller
 import app.simple.felicity.remote.PrepareState
@@ -155,7 +156,7 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
                 _prepare.value = state
                 when (state) {
                     is PrepareState.Ready -> {
-                        MediaPlaybackManager.insertAndPlay(toAudio(track))
+                        MediaPlaybackManager.insertAndPlay(toHydratedAudio(track))
                         if (state.fallback) _events.tryEmit(RemoteEvent.Message("Streaming from fallback server (${state.servedBy})"))
                         onReady?.invoke()
                         prewarmUpcoming()
@@ -180,7 +181,7 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
                 val ready = res.prepare
                 if (ready.state == "ready") {
                     _prepare.value = PrepareState.Ready(res.track.id, ready.servedBy, ready.fallback)
-                    MediaPlaybackManager.insertAndPlay(toAudio(res.track))
+                    MediaPlaybackManager.insertAndPlay(toHydratedAudio(res.track))
                     prewarmUpcoming()
                 } else {
                     play(res.track)
@@ -231,7 +232,25 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
         }
     }
 
+    /** Plays [tracks] immediately (optionally shuffled) and queues the rest. */
+    fun playAll(tracks: List<RemoteTrack>, shuffle: Boolean = false) {
+        val list = if (shuffle) tracks.shuffled() else tracks
+        val first = list.firstOrNull() ?: return
+        val rest = list.drop(1)
+        play(first) {
+            if (rest.isNotEmpty()) enqueue(rest, announce = false)
+        }
+        _events.tryEmit(RemoteEvent.Message(if (shuffle) "Shuffling ${list.size} lossless tracks" else "Playing ${list.size} lossless tracks"))
+    }
+
     fun toAudio(track: RemoteTrack) = RemoteAudioMapper.toAudio(track, api.streamUrl(track.id))
+
+    private suspend fun toHydratedAudio(track: RemoteTrack): Audio = withContext(Dispatchers.IO) {
+        val audio = toAudio(track)
+        val savedFav = runCatching { AudioDatabase.getInstance(context).audioDao()?.getAudioById(audio.id)?.isFavorite == true }.getOrDefault(false)
+        if (savedFav) audio.isFavorite = true
+        audio
+    }
 
     // -------------------------------------------------------------- radio ---
 
@@ -358,7 +377,12 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
         if (!prewarmed.add(track.id)) return
         if (prewarmed.size > 200) prewarmed.remove(prewarmed.first())
         scope.launch(Dispatchers.IO) {
-            runCatching { api.prepare(track.id) }.onFailure { Log.d(TAG, "prewarm ${track.id} failed: ${it.message}") }
+            runCatching {
+                val status = api.prepare(track.id)
+                if (status.state == "ready") {
+                    RemoteDataSources.prefetchStream(context, api.streamUrl(track.id))
+                }
+            }.onFailure { Log.d(TAG, "prewarm ${track.id} failed: ${it.message}") }
         }
     }
 

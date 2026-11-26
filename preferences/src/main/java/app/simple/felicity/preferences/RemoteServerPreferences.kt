@@ -18,9 +18,12 @@ object RemoteServerPreferences {
     const val SERVER_URL = "remote_server_url"
     const val DOWNLOAD_TREE_URI = "remote_server_download_tree_uri"
     const val HOME_MODE = "remote_home_mode"
+    private const val SEARCH_HISTORY = "remote_search_history"
     private const val MODE_ONLINE = "online"
     private const val MODE_OFFLINE = "offline"
     private const val ACCESS_KEY = "remote_server_access_key"
+    private const val HISTORY_SEP = "\u001F"
+    private const val MAX_HISTORY = 8
 
     @Volatile
     private var cached: Pair<Pair<String, String>, ServerConfig?>? = null
@@ -89,6 +92,27 @@ object RemoteServerPreferences {
         SharedPreferences.getSharedPreferences().edit {
             if (uri.isNullOrBlank()) remove(DOWNLOAD_TREE_URI) else putString(DOWNLOAD_TREE_URI, uri)
         }
+    }
+
+    fun getSearchHistory(): List<String> =
+        runCatching { SharedPreferences.getSharedPreferences().getString(SEARCH_HISTORY, "").orEmpty() }
+            .getOrDefault("")
+            .split(HISTORY_SEP)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+    fun addSearchHistory(query: String): List<String> {
+        val clean = query.replace(HISTORY_SEP, " ").trim()
+        if (clean.length < 2) return getSearchHistory()
+        val updated = (listOf(clean) + getSearchHistory().filterNot { it.equals(clean, ignoreCase = true) }).take(MAX_HISTORY)
+        SharedPreferences.getSharedPreferences().edit {
+            putString(SEARCH_HISTORY, updated.joinToString(HISTORY_SEP))
+        }
+        return updated
+    }
+
+    fun clearSearchHistory() {
+        SharedPreferences.getSharedPreferences().edit { remove(SEARCH_HISTORY) }
     }
 
     private fun ensureEncrypted(context: Context) {

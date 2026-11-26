@@ -3,6 +3,7 @@ package app.simple.felicity.viewmodels.panels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.engine.managers.MediaPlaybackManager
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.remote.RecommendationSeed
 import app.simple.felicity.remote.Recommendations
 import app.simple.felicity.remote.RemoteApiException
@@ -62,7 +63,11 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
     private val _localKeys = MutableStateFlow<Set<String>>(emptySet())
     val localKeys: StateFlow<Set<String>> = _localKeys.asStateFlow()
 
+    private val _searchHistory = MutableStateFlow(RemoteServerPreferences.getSearchHistory())
+    val searchHistory: StateFlow<List<String>> = _searchHistory.asStateFlow()
+
     private var recJob: Job? = null
+    private var lastHealthAtMs: Long = 0L
 
     private val _waking = MutableStateFlow(false)
 
@@ -80,7 +85,11 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
                     return@collectLatest
                 }
                 _search.value = Loadable.Loading
-                _search.value = load { remote.search(q) }
+                val result = load { remote.search(q) }
+                _search.value = result
+                if (result is Loadable.Loaded && result.value.tracks.isNotEmpty()) {
+                    _searchHistory.value = RemoteServerPreferences.addSearchHistory(q)
+                }
             }
         }
     }
@@ -100,10 +109,16 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
     fun retrySearch() {
         val q = query.value
         if (q.isBlank()) return
+        _searchHistory.value = RemoteServerPreferences.addSearchHistory(q)
         viewModelScope.launch {
             _search.value = Loadable.Loading
             _search.value = load { remote.search(q) }
         }
+    }
+
+    fun clearSearchHistory() {
+        RemoteServerPreferences.clearSearchHistory()
+        _searchHistory.value = emptyList()
     }
 
     fun setTab(tab: RemoteTab) {
@@ -111,11 +126,14 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
         if (tab == RemoteTab.DISCOVER && _seed.value == null) discover(nowPlayingSeed() ?: RecommendationSeed.tag(DEFAULT_GENRE))
     }
 
-    fun refreshHealth() {
+    fun refreshHealth(force: Boolean = true) {
         if (!remote.isConfigured()) {
             _health.value = Loadable.Idle
             return
         }
+        val now = System.currentTimeMillis()
+        if (!force && _health.value is Loadable.Loaded && now - lastHealthAtMs < 60_000L) return
+        lastHealthAtMs = now
         viewModelScope.launch {
             _health.value = Loadable.Loading
             _health.value = load { remote.health() }
