@@ -34,6 +34,7 @@ describe("API routes", () => {
       recommendations: { lastfm: false, listenbrainz: false, musicbrainz: false },
       cache: "memory",
       mediaAuth: null,
+      configErrors: [],
       discovery: "off",
       accessRequired: false,
       authenticated: true,

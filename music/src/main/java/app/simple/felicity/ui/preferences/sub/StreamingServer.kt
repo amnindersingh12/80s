@@ -138,6 +138,10 @@ class StreamingServer : MediaFragment() {
 
     /** Human-readable `/api/health` summary: gate, providers, recommendation sources. */
     private fun describe(health: ServerHealth, sentKey: Boolean): String = buildString {
+        if (health.configErrors.isNotEmpty()) {
+            appendLine("✗ " + getString(R.string.remote_status_config_error))
+            health.configErrors.forEach { appendLine("  – $it") }
+        }
         when {
             health.accessRequired && !health.authenticated ->
                 appendLine("✗ " + getString(if (sentKey) R.string.remote_status_wrong_key else R.string.remote_status_locked))

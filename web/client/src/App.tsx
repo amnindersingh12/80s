@@ -36,6 +36,13 @@ function isTyping(target: EventTarget | null): boolean {
 
 function ProviderStatus({ health }: { health: HealthResponse | null }) {
   if (!health) return <span className="conn conn-unknown"><Spinner size={10} /> Connecting…</span>;
+  if (health.configErrors?.length) {
+    return (
+      <span className="conn conn-warn" title={`Media config ignored, running demo mode:\n${health.configErrors.join("\n")}\nOpen Diagnostics for details.`}>
+        <span className="dot" /> Config error
+      </span>
+    );
+  }
   if (health.demo) {
     return (
       <span className="conn conn-demo" title="No media server configured — set MEDIA_API_BASE on the server">

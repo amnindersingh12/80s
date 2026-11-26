@@ -57,6 +57,8 @@ data class ServerHealth(
         val cache: String?,
         val accessRequired: Boolean,
         val authenticated: Boolean,
+        /** Media-config problems found at boot; non-empty = server fell back to demo mode. */
+        val configErrors: List<String> = emptyList(),
 ) {
     val primary: ProviderHealth? get() = providers.firstOrNull { it.role == "primary" } ?: providers.firstOrNull()
     val fallback: ProviderHealth? get() = providers.firstOrNull { it.role == "fallback" }
@@ -143,6 +145,7 @@ internal class HealthDto(
         val ok: Boolean? = null, val demo: Boolean? = null, val providers: List<ProviderDto>? = null,
         val recommendations: Map<String, Boolean>? = null, val cache: String? = null,
         val accessRequired: Boolean? = null, val authenticated: Boolean? = null,
+        val configErrors: List<String>? = null,
 )
 
 internal class ErrorDto(val code: String? = null, val message: String? = null, val retryable: Boolean? = null, val upstreamStatus: Int? = null)

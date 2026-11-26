@@ -79,6 +79,7 @@ Kotlin `:remote` module plus thin wiring in `:preferences`, `:engine`, `:reposit
 - [x] `GET /api/doctor` (requires `APP_ACCESS_KEY`, < 30 s router limit) + web UI Diagnostics dialog
 - [x] Android: 20 s connect/read timeouts, one cold-start retry, "Waking server…" status
 - [x] `.github/workflows/android-apk.yml`: `:remote:test` + `:music:assembleFossDebug`, APK artifact
+- [x] Boot never crash-loops on a bad media config/discovery: safe demo mode + `configErrors` in `/api/health`, details in `/api/doctor` (fix for H10 on `felicity-80s`)
 
 ## Verification log
 - `npm run typecheck` — server + client, 0 errors

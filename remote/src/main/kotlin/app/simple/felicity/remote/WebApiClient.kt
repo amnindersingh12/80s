@@ -73,6 +73,7 @@ class WebApiClient(
                 cache = dto.cache,
                 accessRequired = dto.accessRequired ?: false,
                 authenticated = dto.authenticated ?: true,
+                configErrors = dto.configErrors.orEmpty(),
         )
     }
 

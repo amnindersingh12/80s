@@ -49,6 +49,14 @@ class WakeRetryTest {
     }
 
     @Test
+    fun `health exposes boot config errors`() = runBlocking {
+        server.on("GET", "/api/health") {
+            FakeServer.json(it, 200, healthJson.replace("\"cache\"", "\"configErrors\":[\"SUPABASE_URL is required\"],\"cache\""))
+        }
+        assertEquals(listOf("SUPABASE_URL is required"), api.health().configErrors)
+    }
+
+    @Test
     fun `real errors are not retried`() = runBlocking {
         var calls = 0
         server.on("GET", "/api/search") {

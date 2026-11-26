@@ -35,6 +35,8 @@ export interface BuildAppOptions {
   env?: Env;
   /** fetch used by `/api/doctor` (tests). */
   doctorFetch?: typeof fetch;
+  /** Media-config problems found at boot (server then runs in safe demo mode). */
+  configErrors?: string[];
   /** Startup MEDIA_FRONTEND_URL discovery, reused by health and `/api/doctor`. */
   discovery?: { result: DiscoveryResult; filled: string[] };
 }
@@ -58,7 +60,7 @@ const seedProps = {
   tag: { type: "string", maxLength: 100 },
 } as const;
 
-export async function buildApp({ config, services, logger = false, env = process.env, doctorFetch, discovery }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, services, logger = false, env = process.env, doctorFetch, discovery, configErrors = [] }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger:
       logger === true
@@ -150,6 +152,7 @@ export async function buildApp({ config, services, logger = false, env = process
     recommendations: engine.enabledSources,
     cache: services.cache.kind,
     mediaAuth: config.remote?.authMode ?? null,
+    configErrors,
     // off: no MEDIA_FRONTEND_URL (or every value was set explicitly) · failed: page unreachable ·
     // partial: some values not found in the frontend code
     discovery: !discovery

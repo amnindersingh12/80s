@@ -124,6 +124,13 @@ docker compose --profile redis up -d --build   # + Redis cache: set REDIS_URL=re
   heroku ps:type web=basic -a <app>        # or eco (sleeps after 30 min idle)
   ```
 
+  A broken media setup never crash-loops the dyno. If the `MEDIA_*`/`SUPABASE_*`/`SUBSONIC_*`
+  values are invalid, or discovery fails or is slow (25 s cap), the server still binds `$PORT`.
+  It then ignores those variables, runs in demo mode, and lists the problems in
+  `/api/health` → `configErrors` (the UI shows **Config error**) and in `/api/doctor`. Problems
+  outside the media settings, such as a too-short `APP_ACCESS_KEY`, still stop the process, so
+  the server never runs with weaker access control than configured.
+
   Open `https://<app>.herokuapp.com`, unlock with the key, then tap the wrench icon
   (**Diagnostics**) to run the doctor checks from a phone. `GET /api/doctor` with
   `Authorization: Bearer <APP_ACCESS_KEY>` returns the same report as JSON.

@@ -426,3 +426,24 @@ export function loadConfig(env: Env = process.env): Config {
   if (r.problems.length) throw new ConfigError(r.problems);
   return config;
 }
+
+/** Variables that only configure the media providers (ignored in fallback mode). */
+const MEDIA_VARS = /^(MEDIA_|SUPABASE_|SUBSONIC_)/;
+
+/**
+ * Boot-time config: a broken media setup (missing Supabase values, bad field map, failed
+ * discovery…) must not crash-loop the server. The media-provider variables are dropped and the
+ * server starts in demo mode with `problems` set, so /api/health and /api/doctor can explain
+ * what's wrong. Errors outside the media settings (a too-short APP_ACCESS_KEY, a bad PORT…)
+ * still throw, so the server never starts with weaker access control than configured.
+ */
+export function loadConfigWithFallback(env: Env = process.env): { config: Config; problems: string[] } {
+  try {
+    return { config: loadConfig(env), problems: [] };
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    const safe: Env = { DEMO_MODE: "true" };
+    for (const [k, v] of Object.entries(env)) if (!MEDIA_VARS.test(k) && k !== "DEMO_MODE") safe[k] = v;
+    return { config: loadConfig(safe), problems: err.problems };
+  }
+}

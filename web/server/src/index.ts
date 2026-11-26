@@ -1,5 +1,5 @@
 import { buildApp } from "./app.js";
-import { ConfigError, loadConfig } from "./config.js";
+import { ConfigError, loadConfigWithFallback, type Env } from "./config.js";
 import { mask } from "./doctor.js";
 import { applyDiscovery, discoverFrontend, needsDiscovery, type DiscoveryResult } from "./lib/discovery.js";
 import { loadDotEnv } from "./lib/env.js";
@@ -31,10 +31,20 @@ async function discover(): Promise<{ env: NodeJS.ProcessEnv; discovery?: Discove
 
 async function main(): Promise<void> {
   loadDotEnv();
-  const { env, discovery, filled } = await discover();
-  let config;
+  let env: Env = process.env;
+  let discovery: { result: DiscoveryResult; filled: string[] } | undefined;
   try {
-    config = loadConfig(env);
+    const d = await discover();
+    env = d.env;
+    if (d.discovery) discovery = { result: d.discovery, filled: d.filled };
+  } catch (err) {
+    // Discovery must never keep the dyno from binding $PORT.
+    console.error(JSON.stringify({ level: 50, msg: "MEDIA_FRONTEND_URL discovery failed", err: String(err) }));
+  }
+
+  let boot;
+  try {
+    boot = loadConfigWithFallback(env);
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(err.message);
@@ -42,9 +52,22 @@ async function main(): Promise<void> {
     }
     throw err;
   }
-
-  const services = await createServices(config);
-  const app = await buildApp({ config, services, logger: true, env: process.env, discovery: discovery && { result: discovery, filled } });
+  let { config, problems } = boot;
+  let services;
+  try {
+    services = await createServices(config);
+  } catch (err) {
+    // Same rule for provider wiring errors: report, don't crash-loop.
+    problems = [...problems, `Media provider failed to start: ${err instanceof Error ? err.message : String(err)}`];
+    config = loadConfigWithFallback({ ...env, MEDIA_API_BASE: "", SUBSONIC_URL: "", DEMO_MODE: "true" }).config;
+    services = await createServices(config);
+  }
+  if (problems.length) {
+    console.error(
+      JSON.stringify({ level: 50, msg: "Invalid media configuration — started in safe demo mode; see /api/health and /api/doctor", problems }),
+    );
+  }
+  const app = await buildApp({ config, services, logger: true, env: process.env, discovery, configErrors: problems });
   // Re-wire service warnings into the app logger now that it exists.
   const address = await app.listen({ host: config.host, port: config.port });
   app.log.info(

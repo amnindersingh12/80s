@@ -168,6 +168,11 @@ export interface HealthResponse {
   cache: "memory" | "redis";
   /** How the server authenticates to MEDIA_API_BASE (null when no media server is configured). */
   mediaAuth: "none" | "bearer" | "supabase" | null;
+  /**
+   * Media-config problems found at boot. Non-empty means the server ignored the media
+   * settings and runs in demo mode; `/api/doctor` shows the full details.
+   */
+  configErrors: string[];
   /** MEDIA_FRONTEND_URL auto-discovery at startup (`off` also when every value is set explicitly). */
   discovery: "off" | "ok" | "partial" | "failed";
   accessRequired: boolean;

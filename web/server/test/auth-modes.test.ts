@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
-import { ConfigError, loadConfig, type Env } from "../src/config.js";
+import { ConfigError, loadConfig, loadConfigWithFallback, type Env } from "../src/config.js";
 import { MemoryCache } from "../src/lib/cache.js";
 import { createServices } from "../src/services.js";
 import { fakeAudio, startFakeUpstream, type FakeUpstream } from "./helpers/fakeUpstream.js";
@@ -148,5 +148,38 @@ describe("GET /api/doctor", () => {
     expect(JSON.stringify(body)).not.toContain("doctor-key-12345");
     expect(JSON.stringify(body)).not.toContain("hunter2-secret");
     expect(res.headers["cache-control"]).toBe("no-store");
+  });
+});
+
+describe("boot never crash-loops on a broken media config", () => {
+  it("drops the media settings, runs demo mode and reports the problems in /api/health", async () => {
+    const env: Env = {
+      MEDIA_FRONTEND_URL: "https://front.test",
+      MEDIA_API_BASE: "https://front.test",
+      MEDIA_USER_EMAIL: "me@x.test",
+      MEDIA_USER_PASSWORD: "pw",
+      APP_ACCESS_KEY: "boot-key-123456",
+      PORT: "5000",
+      ...FAST,
+    };
+    const { config, problems } = loadConfigWithFallback(env);
+    expect(problems.join("\n")).toContain("SUPABASE_URL is required");
+    expect(config).toMatchObject({ demo: true, port: 5000, accessKey: "boot-key-123456" });
+    expect(config.remote).toBeUndefined();
+
+    const services = await createServices(config, { cache: new MemoryCache() });
+    const app = await buildApp({ config, services, env, configErrors: problems });
+    try {
+      const health = await app.inject("/api/health");
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toMatchObject({ ok: true, demo: true, configErrors: problems });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("still refuses to start with a too-short APP_ACCESS_KEY (never weaker access control)", () => {
+    expect(() => loadConfigWithFallback({ MEDIA_API_BASE: "ftp://bad", APP_ACCESS_KEY: "short" })).toThrow(/APP_ACCESS_KEY must be at least 12/);
+    expect(loadConfigWithFallback({ MEDIA_API_BASE: "https://ok.test" }).problems).toEqual([]);
   });
 });
