@@ -98,6 +98,19 @@ MusicBrainz recommendations and radio. It is independent of the Android build. R
 `cd web && npm install && npm run dev`; see [`web/README.md`](web/README.md) for configuration
 and [`TASKS.md`](TASKS.md) for status.
 
+* **Deploy:** `cd web && docker compose up -d --build` (add `--profile redis` for a Redis
+  cache). The image healthchecks `/api/health` and works on a VPS, Railway, Render or Fly.io.
+* **Check a live `.env`:** `cd web && npm run doctor`. It validates the variables (masked),
+  tests the Supabase login and refresh, runs a sample search to show which `MEDIA_*` field
+  mappings match, and checks Last.fm, ListenBrainz and MusicBrainz.
+* **Use it from the Android app:** go to **Preferences → Library → Streaming server**, enter
+  the server URL and the optional `APP_ACCESS_KEY` (stored encrypted), then tap **Test
+  connection**. A **Stream** panel then appears on the home screen. From there you can search
+  the server, play seekable FLAC streams through the normal player (lock screen and
+  notification included), download tracks into your music folder, and use Discover/Track Radio.
+  With no server configured the app works exactly as before. The client code is in the pure
+  Kotlin [`:remote`](remote) module, with unit tests via `./gradlew :remote:test`.
+
 ## Roadmap
 
 - [x] Initial development and setup

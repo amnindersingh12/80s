@@ -1,21 +1,7 @@
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
 import { ConfigError, loadConfig } from "./config.js";
+import { loadDotEnv } from "./lib/env.js";
 import { createServices } from "./services.js";
-
-/** Load `.env` from the workspace root (web/.env) or the server folder; real env vars win. */
-function loadDotEnv(): void {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [resolve(process.cwd(), ".env"), resolve(here, "../.env"), resolve(here, "../../.env")];
-  for (const file of new Set(candidates)) {
-    if (existsSync(file)) {
-      process.loadEnvFile(file);
-      return;
-    }
-  }
-}
 
 async function main(): Promise<void> {
   loadDotEnv();

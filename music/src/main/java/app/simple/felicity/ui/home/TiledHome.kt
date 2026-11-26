@@ -21,6 +21,7 @@ import app.simple.felicity.decorations.layoutmanager.spanned.SpanSize
 import app.simple.felicity.decorations.layoutmanager.spanned.SpannedGridLayoutManager
 import app.simple.felicity.decorations.utils.RecyclerViewUtils.forEachViewHolderIndexed
 import app.simple.felicity.extensions.fragments.BaseHomeFragment
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.preferences.UserInterfacePreferences
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.shared.utils.UnitUtils.dpToPx
@@ -215,6 +216,7 @@ class TiledHome : BaseHomeFragment() {
         tiles.add(SpannedTile.PanelTile(R.string.songs, R.drawable.ic_song))
         tiles.add(SpannedTile.PanelTile(R.string.albums, R.drawable.ic_album))
         tiles.add(SpannedTile.PanelTile(R.string.artists, R.drawable.ic_people))
+        if (RemoteServerPreferences.isConfigured()) tiles.add(SpannedTile.PanelTile(R.string.remote_stream, R.drawable.ic_cloud))
 
         tiles.add(SpannedTile.PanelTile(R.string.server, R.drawable.ic_wifi))
         tiles.add(SpannedTile.PanelTile(R.string.search, R.drawable.ic_search))

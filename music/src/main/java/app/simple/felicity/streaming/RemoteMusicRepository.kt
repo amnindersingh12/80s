@@ -85,6 +85,17 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
 
     suspend fun health(): ServerHealth = api.health()
 
+    /**
+     * Checks settings the user typed but hasn't saved yet: hits `GET /api/health` on [rawUrl]
+     * with [accessKey]. Throws [app.simple.felicity.remote.InvalidServerUrlException] for an
+     * unusable address and [RemoteApiException] for network/server errors.
+     */
+    suspend fun testConnection(rawUrl: String, accessKey: String?): ServerHealth {
+        val cfg = ServerConfig.from(rawUrl, accessKey)
+            ?: throw app.simple.felicity.remote.InvalidServerUrlException("Enter the server address")
+        return WebApiClient({ cfg }).health()
+    }
+
     suspend fun search(query: String): SearchResult = api.search(query)
 
     suspend fun recommendations(seed: RecommendationSeed): Recommendations = api.recommendations(seed)

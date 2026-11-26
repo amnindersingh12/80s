@@ -644,4 +644,9 @@
     <string name="remote_loading">Loading…</string>
     <string name="remote_downloading">Downloading %1$d%%</string>
     <string name="remote_downloaded">In library</string>
+    <string name="remote_network_hint">Check the address, that the phone can reach the server (same Wi-Fi for LAN addresses), and that the server listens on 0.0.0.0.</string>
+    <string name="remote_status_wrong_key">The access key is wrong</string>
+    <string name="remote_provider_ok">OK</string>
+    <string name="remote_provider_down">Unavailable (circuit open)</string>
+    <string name="remote_nothing_playing">Nothing is playing yet</string>
 </resources>

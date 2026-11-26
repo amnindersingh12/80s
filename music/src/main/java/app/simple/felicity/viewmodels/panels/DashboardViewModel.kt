@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.R
 import app.simple.felicity.extensions.viewmodels.WrappedViewModel
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.preferences.UserInterfacePreferences
 import app.simple.felicity.repository.models.Album
 import app.simple.felicity.repository.models.Artist
@@ -144,6 +145,10 @@ class DashboardViewModel @Inject constructor(
         panels.add(Panel(R.string.songs, R.drawable.ic_song_16dp))
         panels.add(Panel(R.string.albums, R.drawable.ic_album_16dp))
         panels.add(Panel(R.string.artists, R.drawable.ic_people_16dp))
+
+        // Self-hosted web/ server: only shown once a server URL is configured.
+        if (RemoteServerPreferences.isConfigured())
+            panels.add(Panel(R.string.remote_stream, R.drawable.ic_cloud_16dp))
 
         if (UserInterfacePreferences.isPanelVisible(UserInterfacePreferences.PANEL_VISIBLE_ALBUM_ARTISTS))
             panels.add(Panel(R.string.album_artists, R.drawable.ic_artist_16dp))

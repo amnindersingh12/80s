@@ -1,7 +1,8 @@
-# TASKS — Lossless web player & streaming API (`web/`)
+# TASKS — Lossless web player, streaming API (`web/`) & Android client
 
-Status legend: `[x]` done · `[ ]` open. The work lives in [`web/`](web/README.md), a standalone
-TypeScript workspace that sits next to the Android (Gradle) modules and does not touch their build.
+Status legend: `[x]` done · `[ ]` open. The server lives in [`web/`](web/README.md), a standalone
+TypeScript workspace next to the Android (Gradle) modules. The Android client lives in the pure
+Kotlin `:remote` module plus thin wiring in `:preferences`, `:engine`, `:repository` and `:music`.
 
 ## 0. Discovery
 - [x] Inspect repo (Android/Kotlin Felicity fork + embedded NanoHTTPD web player) and decide placement
@@ -52,6 +53,24 @@ TypeScript workspace that sits next to the Android (Gradle) modules and does not
 - [x] All tests pass; `npm run build` (client + server) has zero errors
 - [x] Browser smoke test of the built app in demo mode
 
+## 5. Android app ↔ `web/` API
+- [x] `:remote` pure Kotlin/JVM module: typed `WebApiClient` (health, search, prepare 200/202, stream, download, recommendations, radio)
+- [x] `PreparePoller` state machine (200 ready / 202 preparing → backoff polling → ready / failed / timeout, idle re-post)
+- [x] Access key sent as `Authorization: Bearer <APP_ACCESS_KEY>`, only to the configured origin (OkHttp interceptor + ExoPlayer data source + Media3 bitmap loader)
+- [x] Server settings screen (Preferences → Library → Streaming server): URL, optional key (AES-256 encrypted prefs), Test connection on `GET /api/health` with per-provider status, download folder
+- [x] Stream panel (home screens, only when a server is configured): debounced remote search, preparing banner (stage / % / cancel / retry), LOSSLESS / HI-RES badges via the local `Audio` model
+- [x] Playback through the existing player: `/api/stream/:id` with HTTP `Range` seeking, artwork + metadata on lock screen / notification
+- [x] Downloads: `/api/download/:id` saved into the music folder as the server's `Artist - Title.flac`, library rescan + MediaStore scan
+- [x] Discover / Track Radio: genre & regional chips (incl. Punjabi Pop), similar artists, related tracks (playable vs metadata-only), Start (track) radio appending to the active queue and refilling it
+- [x] No server configured → no panel, no network calls, local playback unchanged
+- [x] Unit tests (`./gradlew :remote:test`): API client, 202 polling state machine, header injection, URL normalisation, Content-Disposition
+
+## 6. Deployment & live config diagnostics
+- [x] Multi-stage `web/Dockerfile` (non-root, prod deps only, `HEALTHCHECK` on `/api/health`) + `.dockerignore`
+- [x] `web/docker-compose.yml` with optional `redis` profile; one-command deploy; VPS / Railway / Render / Fly.io notes
+- [x] `npm run doctor`: masked env diagnostics, Supabase password + refresh grant (exact status + body), sample search with raw top-level keys vs `MEDIA_*` mappings, Last.fm / ListenBrainz / MusicBrainz reachability
+- [x] CI: Docker image build + demo-mode healthcheck smoke test
+
 ## Verification log
 - `npm run typecheck` — server + client, 0 errors
 - `npm test` — server suite (with `TEST_REDIS_URL` for the Redis round-trip) + client queue reducer suite, all passing
@@ -59,6 +78,16 @@ TypeScript workspace that sits next to the Android (Gradle) modules and does not
 - Headless Chromium against the production build:
   - demo mode: search, play, 206 Range stream, keyboard seek, queue / play next, discover, radio, download, mobile (no overflow), light theme
   - fake Supabase/media server/R2: preparing indicator with live stage + %, FLAC 24/96 badge, job-failure message
+
+- Android (2026-11-26): `./gradlew :remote:test` passed 34 of 34. `:music:compileFossDebugKotlin` and `:music:hiltJavaCompileFossDebug` (checks the Hilt graph) built with no errors. A full APK assemble (native NDK builds) was not run on the 2-core build VM.
+- `web/` (2026-11-26): `npm run typecheck`, `npm test` (132 passed, 1 skipped: the Redis round-trip test) and `npm run build` all passed on Node 24.
+- Docker: `docker build web` succeeded (273 MB image). Container smoke test in demo mode with `APP_ACCESS_KEY` set:
+  - `/api/health` returned 200, and the `HEALTHCHECK` reported `healthy`.
+  - Search returned 401 without the key and 200 with the key.
+  - A Range stream request returned 206; the UI returned 200.
+  - The container runs as `node`, and `node server/dist/doctor.js` passed inside it.
+  - `docker compose config` was valid, including the `redis` profile.
+- `npm run doctor` was run live with no `.env` (demo): ListenBrainz and MusicBrainz were reachable.
 
 ## Notes for deployment (not checklist items)
 - Set `LASTFM_API_KEY` and a contactable `MUSICBRAINZ_USER_AGENT` in production for the best recommendations.

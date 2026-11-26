@@ -5,10 +5,12 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <LinearLayout
+    <app.simple.felicity.decorations.padding.NonThemePaddingAwareLinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        app:navigationPaddingRequired="false"
+        app:statusPaddingRequired="true">
 
         <LinearLayout
             android:id="@+id/header"
@@ -201,6 +203,6 @@
             app:isFastScrollRequired="false"
             app:navigationPaddingRequired="true"
             app:statusPaddingRequired="false" />
-    </LinearLayout>
+    </app.simple.felicity.decorations.padding.NonThemePaddingAwareLinearLayout>
 
 </app.simple.felicity.decorations.theme.ThemeFrameLayout>

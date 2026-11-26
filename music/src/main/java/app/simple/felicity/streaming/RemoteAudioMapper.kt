@@ -51,10 +51,10 @@ object RemoteAudioMapper {
         else -> "audio/${track.format}"
     }
 
-    fun extensionFor(track: RemoteTrack): String = when (track.format?.lowercase()) {
+    fun extensionFor(track: RemoteTrack): String = when (val fmt = track.format?.lowercase()) {
         null -> "flac"
         "alac" -> "m4a"
         "wave" -> "wav"
-        else -> track.format.lowercase()
+        else -> fmt
     }
 }

@@ -25,6 +25,7 @@ import app.simple.felicity.ui.panels.Playlists
 import app.simple.felicity.ui.panels.Preferences
 import app.simple.felicity.ui.panels.RecentlyAdded
 import app.simple.felicity.ui.panels.RecentlyPlayed
+import app.simple.felicity.ui.panels.RemoteLibrary
 import app.simple.felicity.ui.panels.Songs
 import app.simple.felicity.ui.panels.Year
 import app.simple.felicity.viewmodels.panels.SimpleHomeViewModel.Companion.Panel
@@ -129,6 +130,7 @@ abstract class BaseHomeFragment : PanelFragment() {
             R.string.most_skipped -> openFragment(MostSkipped.newInstance(), MostSkipped.TAG)
             R.string.bookmarks -> openFragment(Bookmarks.newInstance(), Bookmarks.TAG)
             R.string.search -> openSearch()
+            R.string.remote_stream -> openFragment(RemoteLibrary.newInstance(), RemoteLibrary.TAG)
         }
     }
 }

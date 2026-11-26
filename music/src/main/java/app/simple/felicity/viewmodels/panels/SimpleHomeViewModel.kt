@@ -7,6 +7,7 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.R
 import app.simple.felicity.extensions.viewmodels.WrappedViewModel
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.preferences.UserInterfacePreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,6 +42,8 @@ class SimpleHomeViewModel(application: Application) : WrappedViewModel(applicati
             libraryItems.add(Panel(R.string.songs, R.drawable.ic_song))
             libraryItems.add(Panel(R.string.albums, R.drawable.ic_album))
             libraryItems.add(Panel(R.string.artists, R.drawable.ic_people))
+            if (RemoteServerPreferences.isConfigured())
+                libraryItems.add(Panel(R.string.remote_stream, R.drawable.ic_cloud))
             if (UserInterfacePreferences.isPanelVisible(UserInterfacePreferences.PANEL_VISIBLE_ALBUM_ARTISTS))
                 libraryItems.add(Panel(R.string.album_artists, R.drawable.ic_artist))
             if (UserInterfacePreferences.isPanelVisible(UserInterfacePreferences.PANEL_VISIBLE_COMPOSERS))
@@ -112,6 +115,7 @@ class SimpleHomeViewModel(application: Application) : WrappedViewModel(applicati
             // Rebuild the list whenever any panel's visibility is toggled so Simple Home
             // stays in sync with what the user just changed — no restart needed.
             key in UserInterfacePreferences.ALL_PANEL_VISIBILITY_KEYS -> setHomeData()
+            key == RemoteServerPreferences.SERVER_URL -> setHomeData()
         }
     }
 

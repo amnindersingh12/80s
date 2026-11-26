@@ -1,0 +1,13 @@
+# Keep secrets and local build output out of the image context.
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+**/*.tsbuildinfo
+.git
+Dockerfile
+docker-compose.yml
+.dockerignore

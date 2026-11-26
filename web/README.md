@@ -38,6 +38,68 @@ Requires Node.js ≥ 22.9. **Demo mode** turns on automatically when neither `ME
 `SUBSONIC_URL` is set. It serves a small catalog of synthetic 16-bit/44.1 kHz WAV clips through
 the same proxy, Range and job code paths, so you can try the UI without a server.
 
+## Check your configuration: `npm run doctor`
+
+```bash
+npm run doctor                  # uses web/.env (real env vars win)
+npm run doctor -- "daft punk"   # pick the sample search query
+```
+
+It walks through the live setup step by step and exits with code 1 if anything fails:
+
+1. **Environment.** Runs the server's own config validation and prints every set variable,
+   with secrets masked (`abcd…(32 chars)`, `so***@example.com`). It also warns about demo mode,
+   a missing `APP_ACCESS_KEY` and `HOST=127.0.0.1`.
+2. **Supabase.** Tries the password grant and the refresh grant (from `MEDIA_REFRESH_TOKEN` or
+   from the password grant). On failure it prints the exact HTTP status and the response body,
+   with tokens scrubbed, plus a hint for common causes (400 = wrong credentials, 401 = anon key
+   from another project).
+3. **Sample search.** Shows the raw top-level JSON keys the media server returns, the path where
+   `MEDIA_SEARCH_RESULTS_PATH` found the results array, and the keys of the first result. Next to
+   those it lists every `MEDIA_FIELD_MAP` field with the path it matched, or `✗` when nothing
+   matched, so you can see which mapping to change.
+4. **Recommendations.** Checks the Last.fm key (`artist.getsimilar`), ListenBrainz (validates
+   `LISTENBRAINZ_TOKEN` when set) and MusicBrainz (with your `MUSICBRAINZ_USER_AGENT`).
+
+In Docker: `docker compose run --rm web node server/dist/doctor.js`.
+
+## Deploy
+
+The image bundles the API server and the built web UI. It runs as the unprivileged `node`
+user, listens on `0.0.0.0:8787` and has a `HEALTHCHECK` on `GET /api/health`. That endpoint is
+never behind `APP_ACCESS_KEY`, so the healthcheck works with the gate on.
+
+```bash
+cd web
+cp .env.example .env            # fill in; set APP_ACCESS_KEY for anything internet-facing
+docker compose up -d --build    # → http://<host>:8787
+docker compose --profile redis up -d --build   # + Redis cache: set REDIS_URL=redis://redis:6379/0
+```
+
+* `PUBLISH_PORT=9000 docker compose up -d` changes the host port. Inside the container the
+  server always uses 8787.
+* `.dockerignore` keeps `.env` and `node_modules` out of the build context. Configuration is
+  only read at runtime, via `env_file` or the platform's environment settings.
+* **VPS.** Use the compose file above behind Caddy, nginx or Traefik for TLS, and set
+  `TRUST_PROXY=true`.
+* **Railway / Render.** Create a Docker service from this repo with root directory `web/`
+  (Dockerfile path `web/Dockerfile`), set the variables from `.env.example` in the dashboard,
+  and use `/api/health` as the health check path. Both platforms inject `PORT`, which the server
+  honours. Keep `HOST=0.0.0.0`.
+* **Fly.io.** From `web/`, run `fly launch --no-deploy` (it detects the Dockerfile), set
+  `internal_port = 8787` and add an HTTP check on `/api/health` in `fly.toml`. Store secrets with
+  `fly secrets set MEDIA_USER_PASSWORD=…`, then run `fly deploy`.
+
+## Android app
+
+The Felicity/80s Android app in this repo can use this server directly. Go to **Preferences →
+Library → Streaming server**, enter the base URL (`https://music.example.com` or a LAN address
+such as `192.168.1.20:8787`) and, if the server has one, its `APP_ACCESS_KEY`. Then tap
+**Test connection**. The key is stored encrypted on the phone and is only sent to that origin,
+as `Authorization: Bearer <key>`. Once a server is saved, a **Stream** panel appears on the home
+screen with search, Discover/Radio and downloads. For a phone on the same Wi-Fi, run the server
+with `HOST=0.0.0.0`.
+
 ## How it works
 
 ```
