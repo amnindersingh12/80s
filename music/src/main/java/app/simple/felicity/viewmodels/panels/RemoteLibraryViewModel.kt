@@ -43,7 +43,7 @@ enum class RemoteTab { SEARCH, DISCOVER }
 @HiltViewModel
 class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicRepository) : ViewModel() {
 
-    private val _tab = MutableStateFlow(RemoteTab.SEARCH)
+    private val _tab = MutableStateFlow(RemoteTab.DISCOVER)
     val tab: StateFlow<RemoteTab> = _tab.asStateFlow()
 
     private val _health = MutableStateFlow<Loadable<ServerHealth>>(Loadable.Idle)
@@ -59,6 +59,9 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
     private val _recommendations = MutableStateFlow<Loadable<Recommendations>>(Loadable.Idle)
     val recommendations: StateFlow<Loadable<Recommendations>> = _recommendations.asStateFlow()
 
+    private val _localKeys = MutableStateFlow<Set<String>>(emptySet())
+    val localKeys: StateFlow<Set<String>> = _localKeys.asStateFlow()
+
     private var recJob: Job? = null
 
     private val _waking = MutableStateFlow(false)
@@ -68,8 +71,10 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
 
     init {
         refreshHealth()
+        refreshLocalKeys()
+        if (remote.isConfigured()) loadHome(DEFAULT_GENRE)
         viewModelScope.launch {
-            query.debounce(350).distinctUntilChanged().collectLatest { q ->
+            query.debounce(500).distinctUntilChanged().collectLatest { q ->
                 if (q.isBlank()) {
                     _search.value = Loadable.Idle
                     return@collectLatest
@@ -81,7 +86,13 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
     }
 
     fun setQuery(q: String) {
-        query.value = q.trim()
+        val trimmed = q.trim()
+        query.value = trimmed
+        _tab.value = if (trimmed.isBlank()) RemoteTab.DISCOVER else RemoteTab.SEARCH
+    }
+
+    fun refreshLocalKeys() {
+        viewModelScope.launch { _localKeys.value = remote.localLibraryKeys() }
     }
 
     fun currentQuery(): String = query.value
@@ -108,6 +119,17 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
         viewModelScope.launch {
             _health.value = Loadable.Loading
             _health.value = load { remote.health() }
+        }
+    }
+
+    /** Loads the Online Mode home feed (genre chip or artist seed) via `GET /api/home`. */
+    fun loadHome(genre: String? = DEFAULT_GENRE, seedArtist: String? = null) {
+        val seed = if (!seedArtist.isNullOrBlank()) RecommendationSeed.artist(seedArtist) else RecommendationSeed.tag(genre ?: DEFAULT_GENRE)
+        _seed.value = seed
+        recJob?.cancel()
+        recJob = viewModelScope.launch {
+            _recommendations.value = Loadable.Loading
+            _recommendations.value = load { remote.home(genre, seedArtist) }
         }
     }
 

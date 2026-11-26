@@ -12,6 +12,10 @@
         app:navigationPaddingRequired="false"
         app:statusPaddingRequired="true">
 
+        <include
+            android:id="@+id/mode_toggle"
+            layout="@layout/include_mode_toggle" />
+
         <LinearLayout
             android:id="@+id/header"
             android:layout_width="match_parent"

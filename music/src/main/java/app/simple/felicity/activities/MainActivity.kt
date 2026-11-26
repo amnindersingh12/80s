@@ -1,9 +1,12 @@
 package app.simple.felicity.activities
 
 import android.app.SearchManager
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -385,6 +388,13 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
      *
      * @return a [BasePlayerFragment] subclass instance ready to be committed
      */
+    private fun hasInternetConnection(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun openPlayerForCurrentPreference(): BasePlayerFragment {
         return when (UserInterfacePreferences.getPlayerInterface()) {
             UserInterfacePreferences.PLAYER_INTERFACE_FADED -> PlayerFaded.newInstance()
@@ -394,6 +404,16 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
     }
 
     fun showHome() {
+        if (app.simple.felicity.preferences.RemoteServerPreferences.isOnlineMode()) {
+            if (hasInternetConnection()) {
+                supportFragmentManager.beginTransaction()
+                    .replace(R.id.fragment_container, app.simple.felicity.ui.panels.RemoteLibrary.newInstance(), app.simple.felicity.ui.panels.RemoteLibrary.TAG)
+                    .commit()
+                return
+            } else {
+                android.widget.Toast.makeText(this, R.string.remote_offline_fallback, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
         when (UserInterfacePreferences.getHomeInterface()) {
             UserInterfacePreferences.HOME_INTERFACE_DASHBOARD -> {
                 supportFragmentManager.beginTransaction()

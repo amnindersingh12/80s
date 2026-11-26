@@ -14,6 +14,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import app.simple.felicity.R
+import app.simple.felicity.activities.MainActivity
 import app.simple.felicity.adapters.remote.AdapterRemote
 import app.simple.felicity.adapters.remote.RemoteItem
 import app.simple.felicity.adapters.remote.RemoteTrackCallbacks
@@ -21,6 +22,7 @@ import app.simple.felicity.databinding.FragmentRemoteLibraryBinding
 import app.simple.felicity.decorations.popups.PopupMenuItem
 import app.simple.felicity.decorations.popups.SharedScrollViewPopup
 import app.simple.felicity.extensions.fragments.PanelFragment
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.remote.PrepareState
 import app.simple.felicity.remote.RecommendationSeed
 import app.simple.felicity.remote.Recommendations
@@ -69,6 +71,12 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         binding.recyclerView.requireAttachedMiniPlayer()
 
         binding.settings.setOnClickListener { openFragment(StreamingServer.newInstance(), StreamingServer.TAG) }
+        binding.modeToggle.modeOnline.alpha = 1f
+        binding.modeToggle.modeOffline.alpha = 0.5f
+        binding.modeToggle.modeOffline.setOnClickListener {
+            RemoteServerPreferences.setOnlineMode(false)
+            (requireActivity() as? MainActivity)?.showHome()
+        }
         binding.tabSearch.setOnClickListener { viewModel.setTab(RemoteTab.SEARCH) }
         binding.tabDiscover.setOnClickListener { viewModel.setTab(RemoteTab.DISCOVER) }
         binding.radioStatus.setOnClickListener { remote.stopRadio() }
@@ -97,11 +105,17 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                 }
                 launch { remote.events.collect(::onEvent) }
                 launch {
-                    combine(viewModel.tab, viewModel.search, viewModel.recommendations, viewModel.seed, remote.downloads) { tab, _, _, _, _ -> tab }
-                        .collect { tab ->
-                            showTab(tab)
-                            render()
-                        }
+                    combine(viewModel.tab, viewModel.search, viewModel.recommendations, viewModel.seed, remote.downloads, viewModel.localKeys) { arr ->
+                        arr[0] as RemoteTab
+                    }.collect { tab ->
+                        showTab(tab)
+                        render()
+                    }
+                }
+                launch {
+                    remote.downloads.collect { dls ->
+                        if (dls.values.any { it.finished }) viewModel.refreshLocalKeys()
+                    }
                 }
             }
         }
@@ -147,7 +161,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         val search = tab == RemoteTab.SEARCH
         binding.tabSearch.alpha = if (search) 1f else 0.5f
         binding.tabDiscover.alpha = if (search) 0.5f else 1f
-        if (search) binding.searchRow.visible(false) else binding.searchRow.gone(false)
+        binding.searchRow.visible(false)
     }
 
     private fun showHealth(state: Loadable<ServerHealth>) {
@@ -226,7 +240,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     private fun render() {
         val adapter = adapter ?: return
         if (!remote.isConfigured()) {
-            adapter.submit(listOf(RemoteItem.Message(getString(R.string.remote_not_configured), getString(R.string.remote_open_settings)) {
+            adapter.submit(listOf(RemoteItem.Message(getString(R.string.remote_not_configured), getString(R.string.remote_connect_server)) {
                 openFragment(StreamingServer.newInstance(), StreamingServer.TAG)
             }))
             return
@@ -257,7 +271,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         }
         items += RemoteItem.Chips(
                 RemoteLibraryViewModel.GENRES.map { (label, tag) ->
-                    RemoteItem.Chip(label, tag) { viewModel.discover(RecommendationSeed.tag(tag)) }
+                    RemoteItem.Chip(label, tag) { viewModel.loadHome(tag) }
                 },
                 selectedTag = seed?.takeIf { it.type == SeedType.TAG }?.tag,
         )
@@ -287,21 +301,31 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         if (rec.similarArtists.isNotEmpty()) {
             items += RemoteItem.Section(getString(R.string.remote_similar_artists))
             items += RemoteItem.Chips(rec.similarArtists.map { a ->
-                RemoteItem.Chip(a.name, "artist:${a.name}") { viewModel.discover(RecommendationSeed.artist(a.name)) }
+                RemoteItem.Chip(a.name, "artist:${a.name}") { viewModel.loadHome(seedArtist = a.name) }
             })
         }
 
         if (rec.relatedTracks.isNotEmpty()) {
             items += RemoteItem.Section(
-                    getString(R.string.remote_related_tracks),
-                    "${playable.size}/${rec.relatedTracks.size} playable",
+                    getString(R.string.remote_recommended_songs),
+                    "${rec.relatedTracks.size} tracks",
                     if (playable.isNotEmpty()) getString(R.string.remote_add_to_queue) else null,
             ) { remote.enqueue(playable) }
+            val local = viewModel.localKeys.value
             rec.relatedTracks.forEach { r ->
                 items += if (r.track != null) {
                     trackItem(r.track!!, r.reason)
                 } else {
-                    RemoteItem.Track(r.title, r.artist, null, null, r.reason)
+                    RemoteItem.Track(
+                            title = r.title,
+                            artist = r.artist,
+                            track = null,
+                            audio = null,
+                            detail = r.reason,
+                            coverUrl = r.coverUrl,
+                            album = r.album,
+                            downloaded = local.contains(remote.trackKey(r.title, r.artist)),
+                    )
                 }
             }
         } else {
@@ -316,7 +340,8 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     private fun trackItem(track: RemoteTrack, reason: String? = track.reason): RemoteItem.Track {
         // Mapping registers the track in RemoteCatalog (covers, notification artwork).
         val audio = remote.toAudio(track)
-        return RemoteItem.Track(track.title, track.artist, track, audio, reason, remote.downloads.value[track.id])
+        val downloaded = viewModel.localKeys.value.contains(remote.trackKey(track.title, track.artist))
+        return RemoteItem.Track(track.title, track.artist, track, audio, reason, remote.downloads.value[track.id], downloaded = downloaded)
     }
 
     private fun failure(state: Loadable.Failed, retry: () -> Unit): RemoteItem.Message = if (state.accessDenied) {
@@ -335,6 +360,12 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     }
 
     override fun onDownload(track: RemoteTrack) = remote.download(track)
+
+    override fun onPlayMetadata(title: String, artist: String, album: String?) =
+        remote.resolveAndPlay(title, artist, album)
+
+    override fun onDownloadMetadata(title: String, artist: String, album: String?) =
+        remote.resolveAndDownload(title, artist, album)
 
     override fun onMenu(track: RemoteTrack, anchor: View) {
         SharedScrollViewPopup(

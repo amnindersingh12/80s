@@ -18,6 +18,8 @@ import app.simple.felicity.remote.ServerConfig
 import app.simple.felicity.remote.ServerHealth
 import app.simple.felicity.remote.WebApiClient
 import app.simple.felicity.remote.withWakeRetry
+import app.simple.felicity.repository.database.instances.AudioDatabase
+import app.simple.felicity.repository.models.Audio
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -103,6 +106,32 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
 
     suspend fun recommendations(seed: RecommendationSeed): Recommendations = api.recommendations(seed)
 
+    suspend fun home(genre: String? = null, seedArtist: String? = null): Recommendations = api.home(genre, seedArtist)
+
+    suspend fun localLibraryKeys(): Set<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            AudioDatabase.getInstance(context).audioDao()?.getAllAudioListAll().orEmpty()
+                .mapNotNull { normKey(it.title, it.artist) }
+                .toSet()
+        }.getOrDefault(emptySet())
+    }
+
+    suspend fun findLocalAudio(title: String, artist: String): Audio? = withContext(Dispatchers.IO) {
+        val target = normKey(title, artist) ?: return@withContext null
+        runCatching {
+            AudioDatabase.getInstance(context).audioDao()?.getAllAudioListAll().orEmpty()
+                .firstOrNull { normKey(it.title, it.artist) == target }
+        }.getOrNull()
+    }
+
+    private fun normKey(title: String?, artist: String?): String? {
+        val t = title?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        val a = artist?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
+        return "$a|$t"
+    }
+
+    fun trackKey(title: String, artist: String): String = "${artist.trim().lowercase()}|${title.trim().lowercase()}"
+
     // ----------------------------------------------------------- playback ---
 
     /**
@@ -113,6 +142,11 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
     fun play(track: RemoteTrack, onReady: (() -> Unit)? = null) {
         prepareJob?.cancel()
         prepareJob = scope.launch {
+            findLocalAudio(track.title, track.artist)?.let { local ->
+                MediaPlaybackManager.insertAndPlay(local)
+                onReady?.invoke()
+                return@launch
+            }
             poller.prepare(track.id).collect { state ->
                 _prepare.value = state
                 when (state) {
@@ -125,6 +159,45 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
                     is PrepareState.Failed -> _events.tryEmit(RemoteEvent.Error(state.message))
                     else -> Unit
                 }
+            }
+        }
+    }
+
+    fun resolveAndPlay(title: String, artist: String, album: String? = null) {
+        prepareJob?.cancel()
+        prepareJob = scope.launch {
+            findLocalAudio(title, artist)?.let { local ->
+                MediaPlaybackManager.insertAndPlay(local)
+                return@launch
+            }
+            _prepare.value = PrepareState.Starting("resolve:$artist|$title")
+            try {
+                val res = api.resolve(title, artist, album)
+                val ready = res.prepare
+                if (ready.state == "ready") {
+                    _prepare.value = PrepareState.Ready(res.track.id, ready.servedBy, ready.fallback)
+                    MediaPlaybackManager.insertAndPlay(toAudio(res.track))
+                    prewarmUpcoming()
+                } else {
+                    play(res.track)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                val msg = e.message ?: "Could not resolve track"
+                _prepare.value = PrepareState.Failed("resolve:$artist|$title", "RESOLVE_FAILED", msg, retryable = true)
+                _events.tryEmit(RemoteEvent.Error(msg))
+            }
+        }
+    }
+
+    fun resolveAndDownload(title: String, artist: String, album: String? = null) {
+        scope.launch {
+            try {
+                val res = api.resolve(title, artist, album)
+                download(res.track)
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _events.tryEmit(RemoteEvent.Error(e.message ?: "Download failed"))
             }
         }
     }

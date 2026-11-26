@@ -102,10 +102,39 @@ class WebApiClient(
         seed.title?.let { b.addQueryParameter("title", it) }
         seed.tag?.let { b.addQueryParameter("tag", it) }
         b.addQueryParameter("limit", limit.coerceIn(1, 50).toString())
-        val dto = getJson<RecommendationsDto>(b.build())
+        return parseRecommendations(getJson<RecommendationsDto>(b.build()), cfg, seed)
+    }
+
+    suspend fun home(genre: String? = null, seedArtist: String? = null, limit: Int = 24): Recommendations {
+        val cfg = requireConfig()
+        val b = cfg.api("home").addQueryParameter("limit", limit.coerceIn(1, 50).toString())
+        genre?.takeIf { it.isNotBlank() }?.let { b.addQueryParameter("genre", it) }
+        seedArtist?.takeIf { it.isNotBlank() }?.let { b.addQueryParameter("seedArtist", it) }
+        val fallbackSeed = if (!seedArtist.isNullOrBlank()) RecommendationSeed.artist(seedArtist) else RecommendationSeed.tag(genre ?: "punjabi pop")
+        return parseRecommendations(getJson<RecommendationsDto>(b.build()), cfg, fallbackSeed)
+    }
+
+    suspend fun resolve(title: String, artist: String, album: String? = null): ResolveResult {
+        val cfg = requireConfig()
+        val body = buildMap {
+            put("title", title)
+            put("artist", artist)
+            album?.takeIf { it.isNotBlank() }?.let { put("album", it) }
+        }
+        val request = Request.Builder().url(cfg.api("tracks", "resolve").build())
+            .post(gson.toJson(body).toRequestBody(JSON))
+            .build()
+        val dto = decode<ResolveDto>(request)
+        val track = dto.track?.toDomain(cfg)
+            ?: throw RemoteApiException(200, RemoteApiException.BAD_RESPONSE, "Server returned no resolved track", false)
+        val prepare = dto.prepare?.toDomain(track.id, 200) ?: PrepareStatus(track.id, "ready")
+        return ResolveResult(track, prepare)
+    }
+
+    private fun parseRecommendations(dto: RecommendationsDto, cfg: ServerConfig, fallbackSeed: RecommendationSeed): Recommendations {
         return Recommendations(
-                seedLabel = dto.seed?.label ?: seed.artist ?: seed.tag ?: "",
-                seed = dto.seed.toSeed(seed),
+                seedLabel = dto.seed?.label ?: fallbackSeed.artist ?: fallbackSeed.tag ?: "",
+                seed = dto.seed.toSeed(fallbackSeed),
                 similarArtists = dto.similarArtists.orEmpty().mapNotNull { a ->
                     a.name?.let { SimilarArtist(it, a.mbid, a.score ?: 0.0, a.sources.orEmpty(), cfg.resolve(a.imageUrl)?.toString(), a.playable ?: false) }
                 },

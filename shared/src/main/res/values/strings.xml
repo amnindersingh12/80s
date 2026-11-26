@@ -651,4 +651,10 @@
     <string name="remote_nothing_playing">Nothing is playing yet</string>
     <string name="remote_status_config_error">The server\'s media settings are invalid, so it is running in demo mode:</string>
     <string name="remote_waking">Waking server… (free hosting sleeps when idle — this can take up to 30 s)</string>
+    <string name="mode_online">Online</string>
+    <string name="mode_offline">Offline</string>
+    <string name="remote_connect_server">Connect Streaming Server</string>
+    <string name="remote_offline_fallback">No internet connection — showing offline library</string>
+    <string name="remote_recommended_songs">Recommended songs</string>
+    <string name="remote_tap_to_play">Tap to stream FLAC</string>
 </resources>

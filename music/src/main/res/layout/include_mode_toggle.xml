@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/mode_toggle_bar"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="@dimen/padding_5"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="@dimen/padding_15">
+
+    <app.simple.felicity.decorations.ripple.DynamicRippleTextView
+        android:id="@+id/mode_online"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:padding="@dimen/padding_10"
+        android:text="@string/mode_online"
+        android:textSize="@dimen/text_size_14"
+        app:appFontStyle="bold"
+        app:textColorStyle="accent" />
+
+    <app.simple.felicity.decorations.ripple.DynamicRippleTextView
+        android:id="@+id/mode_offline"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:padding="@dimen/padding_10"
+        android:text="@string/mode_offline"
+        android:textSize="@dimen/text_size_14"
+        app:appFontStyle="bold"
+        app:textColorStyle="secondary" />
+</LinearLayout>

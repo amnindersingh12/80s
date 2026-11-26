@@ -4,7 +4,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import app.simple.felicity.R
+import app.simple.felicity.activities.MainActivity
 import app.simple.felicity.decorations.ripple.DynamicRippleImageButton
+import app.simple.felicity.decorations.ripple.DynamicRippleTextView
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.server.ServerModeService
 import app.simple.felicity.shared.utils.ViewUtils.toColorStateList
 import app.simple.felicity.theme.managers.ThemeManager
@@ -77,6 +80,18 @@ abstract class BaseHomeFragment : PanelFragment() {
                     applyServerToggleTint(button, running)
                 }
             }
+        }
+    }
+
+    protected fun setupOnlineOfflineToggle(onlineButton: DynamicRippleTextView, offlineButton: DynamicRippleTextView) {
+        onlineButton.alpha = 0.5f
+        offlineButton.alpha = 1f
+        onlineButton.setOnClickListener {
+            RemoteServerPreferences.setOnlineMode(true)
+            (requireActivity() as? MainActivity)?.showHome()
+        }
+        offlineButton.setOnClickListener {
+            RemoteServerPreferences.setOnlineMode(false)
         }
     }
 

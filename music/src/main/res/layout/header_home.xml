@@ -52,6 +52,10 @@
 
     </LinearLayout>
 
+    <include
+        android:id="@+id/mode_toggle"
+        layout="@layout/include_mode_toggle" />
+
     <HorizontalScrollView
         android:id="@+id/strip"
         android:layout_width="match_parent"

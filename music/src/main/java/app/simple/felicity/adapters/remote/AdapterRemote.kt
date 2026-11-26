@@ -36,6 +36,9 @@ sealed interface RemoteItem {
             val audio: Audio?,
             val detail: String?,
             val download: DownloadState? = null,
+            val coverUrl: String? = null,
+            val album: String? = null,
+            val downloaded: Boolean = false,
     ) : RemoteItem
 
     data class Chips(val chips: List<Chip>, val selectedTag: Any? = null) : RemoteItem
@@ -49,6 +52,8 @@ interface RemoteTrackCallbacks {
     fun onPlay(track: RemoteTrack)
     fun onMenu(track: RemoteTrack, anchor: View)
     fun onDownload(track: RemoteTrack)
+    fun onPlayMetadata(title: String, artist: String, album: String?) {}
+    fun onDownloadMetadata(title: String, artist: String, album: String?) {}
 }
 
 class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -114,11 +119,12 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
             if (item.audio != null) binding.title.addAudioQualityIcon(item.audio) else binding.title.setCompoundDrawablesRelative(null, null, null, null)
 
             val dl = item.download
+            val isDownloaded = item.downloaded || dl?.finished == true
             binding.tertiaryDetail.text = when {
-                track == null -> listOfNotNull(ctx.getString(R.string.remote_not_in_library), item.detail).joinToString(" · ")
                 dl?.error != null -> dl.error
-                dl?.finished == true -> ctx.getString(R.string.remote_downloaded)
+                isDownloaded -> ctx.getString(R.string.remote_downloaded)
                 dl != null -> ctx.getString(R.string.remote_downloading, ((dl.progress ?: 0f) * 100).toInt())
+                track == null -> listOfNotNull(ctx.getString(R.string.remote_tap_to_play), item.detail).joinToString(" · ")
                 else -> listOfNotNull(
                         track.durationSec?.takeIf { it > 0 }?.let { (it * 1000L).toDynamicTimeString() },
                         track.qualityLabel.takeIf { it.isNotBlank() },
@@ -126,19 +132,24 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) : RecyclerView.
                 ).joinToString(" · ")
             }
 
-            binding.root.alpha = if (track == null) 0.55f else 1f
-            if (item.audio != null) binding.cover.loadArtCoverWithPayload(item.audio) else binding.cover.setImageResource(R.drawable.ic_song)
+            binding.root.alpha = 1f
+            when {
+                item.audio != null -> binding.cover.loadArtCoverWithPayload(item.audio)
+                !item.coverUrl.isNullOrBlank() -> Glide.with(binding.cover).load(item.coverUrl).placeholder(R.drawable.ic_song).into(binding.cover)
+                else -> binding.cover.setImageResource(R.drawable.ic_song)
+            }
+
+            binding.action.visibility = View.VISIBLE
+            binding.action.setImageResource(if (isDownloaded) R.drawable.ic_check else R.drawable.ic_download)
+            binding.action.contentDescription = ctx.getString(if (isDownloaded) R.string.remote_downloaded else R.string.remote_download)
+            binding.action.isEnabled = !isDownloaded && (dl == null || dl.error != null)
 
             if (track == null) {
-                binding.action.visibility = View.INVISIBLE
-                binding.container.setOnClickListener(null)
+                binding.action.setOnClickListener { callbacks.onDownloadMetadata(item.title, item.artist, item.album) }
+                binding.container.setOnClickListener { callbacks.onPlayMetadata(item.title, item.artist, item.album) }
                 binding.container.setOnLongClickListener(null)
                 return
             }
-            binding.action.visibility = View.VISIBLE
-            binding.action.setImageResource(if (dl?.finished == true) R.drawable.ic_check else R.drawable.ic_download)
-            binding.action.contentDescription = ctx.getString(R.string.remote_download)
-            binding.action.isEnabled = dl == null || dl.error != null
             binding.action.setOnClickListener { callbacks.onDownload(track) }
             binding.container.setOnClickListener { callbacks.onPlay(track) }
             binding.container.setOnLongClickListener {

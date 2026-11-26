@@ -147,6 +147,7 @@ class Dashboard : BaseHomeFragment() {
         }
 
         setupServerToggle(binding.serverToggle)
+        setupOnlineOfflineToggle(binding.modeToggle.modeOnline, binding.modeToggle.modeOffline)
 
         // Watch the server state to show or hide the "Server Active" chip in the strip.
         viewLifecycleOwner.lifecycleScope.launch {

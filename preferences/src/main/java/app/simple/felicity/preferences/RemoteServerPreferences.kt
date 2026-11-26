@@ -17,6 +17,9 @@ object RemoteServerPreferences {
 
     const val SERVER_URL = "remote_server_url"
     const val DOWNLOAD_TREE_URI = "remote_server_download_tree_uri"
+    const val HOME_MODE = "remote_home_mode"
+    private const val MODE_ONLINE = "online"
+    private const val MODE_OFFLINE = "offline"
     private const val ACCESS_KEY = "remote_server_access_key"
 
     @Volatile
@@ -25,6 +28,22 @@ object RemoteServerPreferences {
     fun getServerUrl(): String = SharedPreferences.getSharedPreferences().getString(SERVER_URL, "").orEmpty()
 
     fun isConfigured(): Boolean = runCatching { getServerUrl().isNotBlank() }.getOrDefault(false)
+
+    /** Persisted Online/Offline home mode; defaults to Online when a streaming server URL is saved. */
+    fun isOnlineMode(): Boolean {
+        val stored = runCatching { SharedPreferences.getSharedPreferences().getString(HOME_MODE, null) }.getOrNull()
+        return when (stored) {
+            MODE_ONLINE -> true
+            MODE_OFFLINE -> false
+            else -> isConfigured()
+        }
+    }
+
+    fun setOnlineMode(online: Boolean) {
+        SharedPreferences.getSharedPreferences().edit {
+            putString(HOME_MODE, if (online) MODE_ONLINE else MODE_OFFLINE)
+        }
+    }
 
     /**
      * Saves both values. The URL is stored already normalised, the key encrypted.

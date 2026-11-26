@@ -128,6 +128,8 @@ data class Recommendations(
 
 data class RadioBatch(val seedLabel: String, val tracks: List<RemoteTrack>, val exhausted: Boolean, val warnings: List<String>)
 
+data class ResolveResult(val track: RemoteTrack, val prepare: PrepareStatus)
+
 // ------------------------------------------------------------------ DTOs ---
 
 internal class TrackDto(
@@ -155,6 +157,8 @@ internal class PrepareDto(
         val id: String? = null, val state: String? = null, val stage: String? = null, val progress: Double? = null,
         val elapsedMs: Long? = null, val servedBy: String? = null, val fallback: Boolean? = null, val error: ErrorDto? = null,
 )
+
+internal class ResolveDto(val track: TrackDto? = null, val prepare: PrepareDto? = null)
 
 internal class SeedDto(val type: String? = null, val trackId: String? = null, val artist: String? = null, val title: String? = null, val tag: String? = null, val label: String? = null)
 internal class ArtistDto(val name: String? = null, val mbid: String? = null, val score: Double? = null, val sources: List<String>? = null, val imageUrl: String? = null, val playable: Boolean? = null)
