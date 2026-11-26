@@ -140,6 +140,10 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
      * track to the player once it is ready — the UI shows [prepare] in the meantime.
      */
     fun play(track: RemoteTrack, onReady: (() -> Unit)? = null) {
+        if (!track.isLosslessSupported) {
+            _events.tryEmit(RemoteEvent.Error("Only lossless FLAC/ALAC tracks are supported"))
+            return
+        }
         prepareJob?.cancel()
         prepareJob = scope.launch {
             findLocalAudio(track.title, track.artist)?.let { local ->
@@ -314,6 +318,10 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
     // ---------------------------------------------------------- downloads ---
 
     fun download(track: RemoteTrack) {
+        if (!track.isLosslessSupported) {
+            _events.tryEmit(RemoteEvent.Error("Only lossless FLAC/ALAC downloads are supported"))
+            return
+        }
         if (_downloads.value[track.id]?.let { !it.finished && it.error == null } == true) return
         _downloads.update { it + (track.id to DownloadState(progress = null)) }
         scope.launch {

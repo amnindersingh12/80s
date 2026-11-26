@@ -182,7 +182,16 @@ class WaveformSeekbar @JvmOverloads constructor(
 
     private var amplitudes: FloatArray = FloatArray(0)
     private var progressMs: Long = 0L
+    private var bufferedMs: Long = 0L
     private var durationMs: Long = 0L
+
+    fun setBufferedPosition(bufferedPositionMs: Long) {
+        val clamped = bufferedPositionMs.coerceAtLeast(0L)
+        if (clamped != bufferedMs) {
+            bufferedMs = clamped
+            invalidate()
+        }
+    }
 
     /**
      * A set of bookmark timestamps in milliseconds. When not empty, a small circular dot is
@@ -993,7 +1002,15 @@ class WaveformSeekbar @JvmOverloads constructor(
             // centered on the playhead, so the color change is gradual rather than an instant switch.
             val distFromCenter = barCenterX - focalScreenX
             val colorT = ((distFromCenter + blendedTransitionZone) / (2f * blendedTransitionZone)).coerceIn(0f, 1f)
-            barPaint.color = blendArgb(playedColor, unplayedColor, colorT)
+            val barTimeMs = if (drawnAmplitudes.isNotEmpty() && durationMs > 0L) {
+                (bucketCenterIndex / drawnAmplitudes.size) * durationMs
+            } else 0f
+            val isBuffered = bufferedMs > progressMs && barTimeMs in progressMs.toFloat()..bufferedMs.toFloat()
+            barPaint.color = if (isBuffered && colorT > 0.5f) {
+                blendArgb(playedColor, unplayedColor, 0.45f)
+            } else {
+                blendArgb(playedColor, unplayedColor, colorT)
+            }
 
             // Bars closest to the playhead render at full opacity; bars toward the outer
             // edges fade toward HIGHLIGHT_MIN_ALPHA, creating a spotlight effect that follows

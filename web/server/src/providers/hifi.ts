@@ -1,6 +1,6 @@
 import { AppError } from "../errors.js";
 import { parseRetryAfterMs, requestJson, type FetchFn } from "../lib/http.js";
-import type { AudioProvider, ProviderTrack, SearchOptions, StreamOptions, StreamSource } from "./types.js";
+import { verifyLosslessStream, type AudioProvider, type ProviderTrack, type SearchOptions, type StreamOptions, type StreamSource } from "./types.js";
 
 export interface HiFiPoolOptions {
   instances: string[];
@@ -106,14 +106,21 @@ export class HiFiPoolProvider implements AudioProvider {
       try {
         const res = await this.fetchFn(streamUrl, {
           method: "GET",
-          headers: { range: "bytes=0-0" },
+          headers: { range: "bytes=0-63" },
           signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs),
         });
-        await res.body?.cancel().catch(() => undefined);
         if (res.status === 200 || res.status === 206) {
+          const headBytes = new Uint8Array(await res.arrayBuffer());
+          const check = verifyLosslessStream(res.headers.get("content-type"), headBytes);
+          if (!check.ok) {
+            this.markDown(base, this.cooldownMs);
+            lastErr = new AppError("UPSTREAM_UNAVAILABLE", check.reason ?? "Lossy stream rejected", { provider: this.name });
+            continue;
+          }
           this.openUntil.delete(base);
-          return { url: streamUrl, mimeType: "audio/flac", extension: "flac" };
+          return { url: streamUrl, mimeType: check.mimeType ?? "audio/flac", extension: check.extension ?? "flac" };
         }
+        await res.body?.cancel().catch(() => undefined);
         if (res.status === 404) {
           throw new AppError("NOT_FOUND", "Track not found on HiFi pool", { upstreamStatus: 404, provider: this.name });
         }

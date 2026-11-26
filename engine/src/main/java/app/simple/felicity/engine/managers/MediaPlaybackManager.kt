@@ -219,6 +219,7 @@ object MediaPlaybackManager {
      * suspends (it just replaces the stored value), so fast emission loops can't pile up in memory.
      */
     private val _songSeekPositionFlow = MutableStateFlow(0L)
+    private val _audioSessionIdFlow = MutableStateFlow(0)
 
     private val _playbackStateFlow = MutableSharedFlow<Int>(replay = 1)
     private val _repeatModeFlow = MutableSharedFlow<Int>(replay = 1)
@@ -228,6 +229,16 @@ object MediaPlaybackManager {
     val songListFlow: SharedFlow<List<Audio>> = _songListFlow.asSharedFlow()
     val songPositionFlow: SharedFlow<Int> = _songPositionFlow.asSharedFlow()
     val songSeekPositionFlow: StateFlow<Long> = _songSeekPositionFlow.asStateFlow()
+    val audioSessionIdFlow: StateFlow<Int> = _audioSessionIdFlow.asStateFlow()
+
+    fun notifyAudioSessionId(sessionId: Int) {
+        _audioSessionIdFlow.value = sessionId
+    }
+
+    @MainThread
+    fun getBufferedPosition(): Long {
+        return mediaController?.bufferedPosition ?: 0L
+    }
     val playbackStateFlow: SharedFlow<Int> = _playbackStateFlow.asSharedFlow()
     val repeatModeFlow: SharedFlow<Int> = _repeatModeFlow.asSharedFlow()
     val shuffleStateFlow: SharedFlow<Boolean> = _shuffleStateFlow.asSharedFlow()

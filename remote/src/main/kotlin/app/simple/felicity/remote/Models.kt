@@ -16,7 +16,9 @@ data class RemoteTrack(
         /** Absolute URL (already resolved against the server), or null. */
         val coverUrl: String? = null,
         val format: String? = null,
+        val codec: String? = null,
         val lossless: Boolean = false,
+        val qualityTier: String? = null,
         val bitDepth: Int? = null,
         val sampleRate: Int? = null,
         val bitrateKbps: Int? = null,
@@ -29,6 +31,33 @@ data class RemoteTrack(
 ) {
     /** True for 24-bit and/or > 48 kHz material — drives the HI-RES badge. */
     val isHiRes: Boolean get() = (bitDepth ?: 0) >= 24 || (sampleRate ?: 0) > 48_000
+
+    /** Strict lossless check: FLAC / ALAC / lossless PCM only (never MP3/AAC/Opus/Ogg). */
+    val isLosslessSupported: Boolean
+        get() = lossless && (format == null || format.lowercase() in LOSSLESS_FORMATS)
+
+    /** Normalized codec label: FLAC or ALAC. */
+    val resolvedCodec: String
+        get() = (codec ?: if (format?.lowercase() in setOf("alac", "m4a")) "ALAC" else "FLAC").uppercase()
+
+    /** Crisp badge text: `HI-RES · 24-bit/96kHz`, `FLAC · 16-bit/44.1kHz`, `ALAC`, etc. */
+    val losslessBadge: String
+        get() {
+            val c = resolvedCodec
+            val bd = bitDepth
+            val sr = sampleRate
+            val specs = if (bd != null && sr != null && bd > 0 && sr > 0) {
+                val khz = sr / 1000.0
+                val k = if (khz % 1.0 == 0.0) khz.toInt().toString() else String.format(java.util.Locale.US, "%.1f", khz)
+                "$bd-bit/${k}kHz"
+            } else null
+            return when {
+                isHiRes && specs != null -> "HI-RES · $specs"
+                isHiRes -> "HI-RES · $c"
+                specs != null -> "$c · $specs"
+                else -> c
+            }
+        }
 
     /** "FLAC 24/96", "WAV 16/44.1", "MP3 320"… */
     val qualityLabel: String
@@ -135,7 +164,7 @@ data class ResolveResult(val track: RemoteTrack, val prepare: PrepareStatus)
 internal class TrackDto(
         val id: String? = null, val provider: String? = null, val title: String? = null, val artist: String? = null,
         val album: String? = null, val durationSec: Double? = null, val coverUrl: String? = null, val format: String? = null,
-        val lossless: Boolean? = null, val bitDepth: Int? = null, val sampleRate: Int? = null, val bitrateKbps: Int? = null,
+        val codec: String? = null, val lossless: Boolean? = null, val qualityTier: String? = null, val bitDepth: Int? = null, val sampleRate: Int? = null, val bitrateKbps: Int? = null,
         val year: Int? = null, val trackNumber: Int? = null, val isrc: String? = null, val key: String? = null, val reason: String? = null,
 )
 
@@ -182,8 +211,12 @@ internal fun ErrorDto.toDomain(fallbackStatus: Int): RemoteError = RemoteError(
         upstreamStatus = upstreamStatus,
 )
 
+private val LOSSLESS_FORMATS = setOf("flac", "alac", "wav", "wave", "aiff", "aif")
+
 internal fun TrackDto.toDomain(config: ServerConfig, extraKey: String? = null, extraReason: String? = null): RemoteTrack? {
     val id = id?.takeIf { it.contains(':') } ?: return null
+    val fmt = format?.lowercase()
+    val isLossless = lossless ?: (fmt == null || fmt in LOSSLESS_FORMATS)
     return RemoteTrack(
             id = id,
             provider = provider ?: id.substringBefore(':'),
@@ -192,8 +225,10 @@ internal fun TrackDto.toDomain(config: ServerConfig, extraKey: String? = null, e
             album = album?.takeIf { it.isNotBlank() },
             durationSec = durationSec?.toInt()?.takeIf { it > 0 },
             coverUrl = config.resolve(coverUrl)?.toString(),
-            format = format?.lowercase(),
-            lossless = lossless ?: false,
+            format = fmt,
+            codec = codec?.uppercase(),
+            lossless = isLossless,
+            qualityTier = qualityTier,
             bitDepth = bitDepth?.takeIf { it > 0 },
             sampleRate = sampleRate?.takeIf { it > 0 },
             bitrateKbps = bitrateKbps?.takeIf { it > 0 },

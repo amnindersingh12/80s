@@ -83,7 +83,7 @@ class WebApiClient(
         val dto = getJson<SearchDto>(url)
         return SearchResult(
                 query = dto.query ?: query,
-                tracks = dto.tracks.orEmpty().mapNotNull { it.toDomain(cfg) },
+                tracks = dto.tracks.orEmpty().mapNotNull { it.toDomain(cfg) }.filter { it.isLosslessSupported },
                 provider = dto.provider,
                 fallback = dto.fallback ?: false,
                 cached = dto.cached ?: false,
@@ -125,8 +125,8 @@ class WebApiClient(
             .post(gson.toJson(body).toRequestBody(JSON))
             .build()
         val dto = decode<ResolveDto>(request)
-        val track = dto.track?.toDomain(cfg)
-            ?: throw RemoteApiException(200, RemoteApiException.BAD_RESPONSE, "Server returned no resolved track", false)
+        val track = dto.track?.toDomain(cfg)?.takeIf { it.isLosslessSupported }
+            ?: throw RemoteApiException(200, RemoteApiException.BAD_RESPONSE, "No lossless FLAC/ALAC stream available for this track", false)
         val prepare = dto.prepare?.toDomain(track.id, 200) ?: PrepareStatus(track.id, "ready")
         return ResolveResult(track, prepare)
     }
@@ -149,7 +149,7 @@ class WebApiClient(
                             coverUrl = cfg.resolve(r.coverUrl)?.toString(),
                             score = r.score ?: 0.0,
                             sources = r.sources.orEmpty(),
-                            track = if (r.availability == "playable") r.track?.toDomain(cfg, key, r.reason) else null,
+                            track = if (r.availability == "playable") r.track?.toDomain(cfg, key, r.reason)?.takeIf { it.isLosslessSupported } else null,
                             reason = r.reason,
                     )
                 },

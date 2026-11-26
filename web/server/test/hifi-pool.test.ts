@@ -106,4 +106,37 @@ describe("ProviderChain multi-provider cooldown & RemoteMediaProvider rate limit
     await remote.search("q2");
     await expect(remote.search("q3")).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE", upstreamStatus: 429 });
   });
+
+  it("rejects lossy audio/mpeg and audio/aac streams and fails over to the next lossless provider", async () => {
+    const ttl = { searchMs: 1_800_000, streamUrlMs: 3_600_000, trackMs: 3_600_000 };
+    const lossyHifi = new HiFiPoolProvider({
+      name: "hifi",
+      instances: ["https://lossy.hifi.test"],
+      fetch: (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/search/tracks")) {
+          return new Response(JSON.stringify({ tracks: [{ trackId: "1", title: "Karma Police", artistNames: ["Radiohead"] }] }), { status: 200 });
+        }
+        return new Response("ID3\u0003\u0000", { status: 206, headers: { "content-type": "audio/mpeg" } });
+      }) as typeof fetch,
+    });
+    const backup = new MockAudioProvider({ name: "backup" });
+    const cache = new MemoryCache();
+    const p1 = new CachedProvider(lossyHifi, cache, ttl);
+    const p2 = new CachedProvider(backup, cache, ttl);
+    const chain = new ProviderChain([p1, p2]);
+
+    await p1.searchWithMeta("Radiohead Karma Police");
+    await expect(lossyHifi.getStreamUrl("1")).rejects.toMatchObject({ code: "UPSTREAM_UNAVAILABLE" });
+
+    // Chain resolveStream fails over from lossy hifi to backup
+    const resolved = await chain.resolveStream("hifi:1");
+    expect(resolved.fallback).toBe(true);
+    expect(resolved.servedBy.name).toBe("backup");
+
+    const { verifyLosslessStream } = await import("../src/providers/types.js");
+    expect(verifyLosslessStream("audio/aac").ok).toBe(false);
+    expect(verifyLosslessStream("audio/mpeg").ok).toBe(false);
+    expect(verifyLosslessStream("audio/flac", new Uint8Array([0x66, 0x4c, 0x61, 0x43])).ok).toBe(true);
+  });
 });

@@ -47,6 +47,7 @@ class WebApiClientTest {
         server.on("GET", "/80s/api/search") {
             FakeServer.json(it, 200, """{"query":"lover","provider":"remote","fallback":false,"cached":true,"tracks":[
               {"id":"remote:t1","provider":"remote","title":"Lover","artist":"Diljit Dosanjh","album":"MoonChild Era","durationSec":182,"coverUrl":"/api/cover/remote:c1","format":"flac","lossless":true,"bitDepth":24,"sampleRate":96000},
+              {"id":"remote:lossy","provider":"remote","title":"Lossy","artist":"Test","format":"mp3","lossless":false},
               {"id":"no-prefix","title":"broken"},
               {"id":"subsonic:9","title":"","artist":null,"coverUrl":"https://cdn.example.net/x.jpg"}]}""")
         }

@@ -281,7 +281,8 @@ open class CustomVerticalRecyclerView(context: Context, attrs: AttributeSet?) : 
 
     private inline fun <reified T : VerticalListViewHolder> RecyclerView.forEachVisibleHolder(action: (T) -> Unit) {
         for (i in 0 until childCount) {
-            action(getChildViewHolder(getChildAt(i)) as T)
+            val child = getChildAt(i) ?: continue
+            (getChildViewHolder(child) as? T)?.let(action)
         }
     }
 

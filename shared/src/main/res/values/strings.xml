@@ -657,4 +657,8 @@
     <string name="remote_offline_fallback">No internet connection — showing offline library</string>
     <string name="remote_recommended_songs">Recommended songs</string>
     <string name="remote_tap_to_play">Tap to stream FLAC</string>
+    <string name="remote_download_flac">Download FLAC</string>
+    <string name="remote_picked_for_you">Picked for you</string>
+    <string name="remote_lossless_details_title">Lossless Audio Details</string>
+    <string name="remote_lossless_verified">Verified Lossless (FLAC / ALAC only)</string>
 </resources>

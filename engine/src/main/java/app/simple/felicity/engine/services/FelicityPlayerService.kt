@@ -946,6 +946,7 @@ class FelicityPlayerService : MediaLibraryService(), SharedPreferences.OnSharedP
     private val playerListener = object : Player.Listener {
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             super.onAudioSessionIdChanged(audioSessionId)
+            MediaPlaybackManager.notifyAudioSessionId(audioSessionId)
             Log.d(TAG, "Audio session ID changed: $audioSessionId")
         }
 

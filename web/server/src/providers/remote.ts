@@ -6,6 +6,7 @@ import type { RemoteProviderConfig } from "../config.js";
 import {
   MIME_BY_EXTENSION,
   inferLossless,
+  verifyLosslessStream,
   type AudioProvider,
   type JobProgress,
   type ProviderTrack,
@@ -173,20 +174,10 @@ export class RemoteMediaProvider implements AudioProvider {
 
     try {
       report({ stage: "queued" });
-      const createUrl = new URL(joinUrl(this.cfg.baseUrl, fillPath(this.cfg.jobCreatePath, { id, trackId: id })));
-      const isGet = this.cfg.jobCreateMethod === "GET";
-      if (isGet) createUrl.searchParams.set(this.cfg.trackIdField, id);
-
-      const created = await this.authedJson(createUrl.toString(), {
-        method: this.cfg.jobCreateMethod,
-        body: isGet ? undefined : { ...this.cfg.jobExtraBody, [this.cfg.trackIdField]: id },
-        timeoutMs: Math.min(this.cfg.requestTimeoutMs, remaining()),
-        retries: this.cfg.jobRetries,
-        signal: combined,
-        label: "Job creation",
-      });
+      const created = await this.createJobWithLosslessFallback(id, remaining, combined);
       if (created.status === 404) throw new AppError("NOT_FOUND", "Track not found on the media server", { upstreamStatus: 404, provider: this.name });
       this.assertOk(created, "Job creation");
+      this.assertLosslessJobPayload(created.data);
 
       let state = this.readJob(created.data);
       if (state.failed) throw this.jobFailed(state);
@@ -235,6 +226,37 @@ export class RemoteMediaProvider implements AudioProvider {
       throw err;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private async createJobWithLosslessFallback(id: string, remaining: () => number, signal: AbortSignal): Promise<JsonResponse> {
+    const createUrl = new URL(joinUrl(this.cfg.baseUrl, fillPath(this.cfg.jobCreatePath, { id, trackId: id })));
+    const isGet = this.cfg.jobCreateMethod === "GET";
+    if (isGet) createUrl.searchParams.set(this.cfg.trackIdField, id);
+
+    const qualities = createUrl.searchParams.get("quality") === "27" ? ["27", "7", "6"] : [null];
+    let lastRes!: JsonResponse;
+    for (const q of qualities) {
+      if (q) createUrl.searchParams.set("quality", q);
+      lastRes = await this.authedJson(createUrl.toString(), {
+        method: this.cfg.jobCreateMethod,
+        body: isGet ? undefined : { ...this.cfg.jobExtraBody, [this.cfg.trackIdField]: id },
+        timeoutMs: Math.min(this.cfg.requestTimeoutMs, remaining()),
+        retries: this.cfg.jobRetries,
+        signal,
+        label: "Job creation",
+      });
+      if (lastRes.status >= 200 && lastRes.status < 300) return lastRes;
+      if (!q || (lastRes.status !== 400 && lastRes.status !== 404 && lastRes.status !== 422)) return lastRes;
+    }
+    return lastRes;
+  }
+
+  private assertLosslessJobPayload(data: unknown): void {
+    const mime = pickString(data, "mimeType|mime_type|contentType");
+    const check = verifyLosslessStream(mime);
+    if (!check.ok) {
+      throw new AppError("UPSTREAM_UNAVAILABLE", check.reason ?? "Lossy stream rejected", { provider: this.name });
     }
   }
 

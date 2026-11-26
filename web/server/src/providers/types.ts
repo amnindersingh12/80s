@@ -93,3 +93,52 @@ export function inferLossless(format?: string, quality?: string, defaultLossless
   }
   return defaultLossless;
 }
+
+const LOSSY_MIME_RE = /\b(mpeg|mp3|aac|ogg|opus|vorbis|webm|mp4a)\b/i;
+
+/** Rejects explicit lossy MIME types or known lossy magic headers (`ID3`, MP3 sync, `OggS`, ADTS, `mp4a` without `alac`). */
+export function verifyLosslessStream(
+  mime: string | null | undefined,
+  headBytes?: Uint8Array,
+): { ok: boolean; codec?: "FLAC" | "ALAC"; mimeType?: string; extension?: string; reason?: string } {
+  const m = (mime ?? "").split(";")[0]!.trim().toLowerCase();
+  if (m && LOSSY_MIME_RE.test(m)) {
+    return { ok: false, reason: `Lossy content-type "${m}" rejected (FLAC/ALAC only)` };
+  }
+  if (headBytes && headBytes.length >= 4) {
+    // fLaC
+    if (headBytes[0] === 0x66 && headBytes[1] === 0x4c && headBytes[2] === 0x61 && headBytes[3] === 0x43) {
+      return { ok: true, codec: "FLAC", mimeType: "audio/flac", extension: "flac" };
+    }
+    // ID3 or MPEG ADTS/MP3 frame sync
+    const isId3 = headBytes[0] === 0x49 && headBytes[1] === 0x44 && headBytes[2] === 0x33;
+    const isOgg = headBytes[0] === 0x4f && headBytes[1] === 0x67 && headBytes[2] === 0x67 && headBytes[3] === 0x53;
+    const isMp3OrAdts = headBytes[0] === 0xff && (headBytes[1]! & 0xe0) === 0xe0;
+    if (isId3 || isOgg || isMp3OrAdts) {
+      return { ok: false, reason: "Lossy audio stream header rejected (FLAC/ALAC only)" };
+    }
+    // ISO BMFF (`ftyp` at offset 4)
+    if (headBytes.length >= 8 && headBytes[4] === 0x66 && headBytes[5] === 0x74 && headBytes[6] === 0x79 && headBytes[7] === 0x70) {
+      const ascii = Buffer.from(headBytes).toString("latin1");
+      if (ascii.includes("alac")) return { ok: true, codec: "ALAC", mimeType: "audio/mp4", extension: "m4a" };
+      if (ascii.includes("mp4a") || ascii.includes("M4A ")) {
+        return { ok: false, reason: "Lossy M4A/AAC container rejected (FLAC/ALAC only)" };
+      }
+    }
+  }
+  if (m.includes("mp4") || m.includes("alac")) return { ok: true, codec: "ALAC", mimeType: "audio/mp4", extension: "m4a" };
+  return { ok: true, codec: "FLAC", mimeType: "audio/flac", extension: "flac" };
+}
+
+export function normalizeLosslessMetadata(track: ProviderTrack): ProviderTrack {
+  const fmt = track.format?.toLowerCase();
+  const codec: "FLAC" | "ALAC" = fmt === "alac" || fmt === "m4a" ? "ALAC" : "FLAC";
+  const isHiRes = (track.bitDepth !== undefined && track.bitDepth > 16) || (track.sampleRate !== undefined && track.sampleRate > 48_000);
+  return {
+    ...track,
+    format: track.format ?? (codec === "ALAC" ? "alac" : "flac"),
+    codec: track.codec ?? codec,
+    lossless: true,
+    qualityTier: track.qualityTier ?? (isHiRes ? "HI-RES LOSSLESS" : "LOSSLESS"),
+  };
+}

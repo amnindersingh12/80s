@@ -16,22 +16,26 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import app.simple.felicity.R
 import app.simple.felicity.activities.MainActivity
 import app.simple.felicity.adapters.remote.AdapterRemote
+import app.simple.felicity.adapters.remote.ArtistCarouselItem
 import app.simple.felicity.adapters.remote.RemoteItem
 import app.simple.felicity.adapters.remote.RemoteTrackCallbacks
 import app.simple.felicity.databinding.FragmentRemoteLibraryBinding
 import app.simple.felicity.decorations.popups.PopupMenuItem
 import app.simple.felicity.decorations.popups.SharedScrollViewPopup
+import app.simple.felicity.engine.managers.MediaPlaybackManager
 import app.simple.felicity.extensions.fragments.PanelFragment
 import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.remote.PrepareState
 import app.simple.felicity.remote.RecommendationSeed
 import app.simple.felicity.remote.Recommendations
+import app.simple.felicity.remote.RemoteIds
 import app.simple.felicity.remote.RemoteTrack
 import app.simple.felicity.remote.SearchResult
 import app.simple.felicity.remote.SeedType
 import app.simple.felicity.remote.ServerHealth
 import app.simple.felicity.shared.utils.ViewUtils.gone
 import app.simple.felicity.shared.utils.ViewUtils.visible
+import app.simple.felicity.streaming.ArtworkColorHelper
 import app.simple.felicity.streaming.RemoteEvent
 import app.simple.felicity.ui.preferences.sub.StreamingServer
 import app.simple.felicity.viewmodels.panels.Loadable
@@ -117,6 +121,8 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                         if (dls.values.any { it.finished }) viewModel.refreshLocalKeys()
                     }
                 }
+                launch { MediaPlaybackManager.songPositionFlow.collect { render() } }
+                launch { MediaPlaybackManager.playbackStateFlow.collect { render() } }
             }
         }
     }
@@ -292,46 +298,68 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                 rec.warnings.firstOrNull(),
         ).joinToString("\n").ifBlank { null }
 
+        val local = viewModel.localKeys.value
+        val trackItems = rec.relatedTracks.map { r ->
+            if (r.track != null) {
+                trackItem(r.track!!, r.reason)
+            } else {
+                val playing = isTrackPlaying(null, r.title, r.artist)
+                RemoteItem.Track(
+                        title = r.title,
+                        artist = r.artist,
+                        track = null,
+                        audio = null,
+                        detail = r.reason,
+                        coverUrl = r.coverUrl,
+                        album = r.album,
+                        downloaded = local.contains(remote.trackKey(r.title, r.artist)),
+                        isPlaying = playing,
+                )
+            }
+        }
+
+        val heroTrack = trackItems.firstOrNull { !it.coverUrl.isNullOrBlank() || it.audio != null } ?: trackItems.firstOrNull()
+        if (heroTrack != null) {
+            ArtworkColorHelper.tintFromUrl(requireContext(), heroTrack.coverUrl ?: heroTrack.track?.coverUrl, binding.root, 0.22f)
+            items += RemoteItem.Hero(heroTrack, heroTrack.track?.losslessBadge ?: "HI-RES LOSSLESS · FLAC")
+        }
+
         items += RemoteItem.Section(
                 if (rec.seed.type == SeedType.TRACK) getString(R.string.remote_because_playing, rec.seedLabel) else rec.seedLabel,
                 subtitle,
                 getString(if (rec.seed.type == SeedType.TRACK) R.string.remote_start_track_radio else R.string.remote_start_radio),
         ) { remote.startRadio(rec.seed, rec.seedLabel) }
 
+        if (trackItems.size >= 3) {
+            items += RemoteItem.Section(getString(R.string.remote_picked_for_you))
+            items += RemoteItem.TrackCarousel(trackItems.take(8))
+        }
+
         if (rec.similarArtists.isNotEmpty()) {
             items += RemoteItem.Section(getString(R.string.remote_similar_artists))
-            items += RemoteItem.Chips(rec.similarArtists.map { a ->
-                RemoteItem.Chip(a.name, "artist:${a.name}") { viewModel.loadHome(seedArtist = a.name) }
+            items += RemoteItem.ArtistCarousel(rec.similarArtists.map { a ->
+                ArtistCarouselItem(a.name, a.imageUrl) { viewModel.loadHome(seedArtist = a.name) }
             })
         }
 
-        if (rec.relatedTracks.isNotEmpty()) {
+        if (trackItems.isNotEmpty()) {
             items += RemoteItem.Section(
                     getString(R.string.remote_recommended_songs),
-                    "${rec.relatedTracks.size} tracks",
+                    "${trackItems.size} lossless tracks",
                     if (playable.isNotEmpty()) getString(R.string.remote_add_to_queue) else null,
             ) { remote.enqueue(playable) }
-            val local = viewModel.localKeys.value
-            rec.relatedTracks.forEach { r ->
-                items += if (r.track != null) {
-                    trackItem(r.track!!, r.reason)
-                } else {
-                    RemoteItem.Track(
-                            title = r.title,
-                            artist = r.artist,
-                            track = null,
-                            audio = null,
-                            detail = r.reason,
-                            coverUrl = r.coverUrl,
-                            album = r.album,
-                            downloaded = local.contains(remote.trackKey(r.title, r.artist)),
-                    )
-                }
-            }
+            items += trackItems
         } else {
             items += RemoteItem.Message(getString(R.string.remote_no_results))
         }
         return items
+    }
+
+    private fun isTrackPlaying(track: RemoteTrack?, title: String, artist: String): Boolean {
+        val current = MediaPlaybackManager.getCurrentSong() ?: return false
+        if (!MediaPlaybackManager.isPlaying()) return false
+        if (track != null && current.id == RemoteIds.audioIdFor(track.id)) return true
+        return current.title.equals(title, ignoreCase = true) && current.artist.equals(artist, ignoreCase = true)
     }
 
     private fun loadingText(): String =
@@ -341,7 +369,18 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         // Mapping registers the track in RemoteCatalog (covers, notification artwork).
         val audio = remote.toAudio(track)
         val downloaded = viewModel.localKeys.value.contains(remote.trackKey(track.title, track.artist))
-        return RemoteItem.Track(track.title, track.artist, track, audio, reason, remote.downloads.value[track.id], downloaded = downloaded)
+        return RemoteItem.Track(
+                title = track.title,
+                artist = track.artist,
+                track = track,
+                audio = audio,
+                detail = reason,
+                download = remote.downloads.value[track.id],
+                coverUrl = track.coverUrl,
+                album = track.album,
+                downloaded = downloaded,
+                isPlaying = isTrackPlaying(track, track.title, track.artist),
+        )
     }
 
     private fun failure(state: Loadable.Failed, retry: () -> Unit): RemoteItem.Message = if (state.accessDenied) {

@@ -5,7 +5,7 @@ import { AppError } from "../errors.js";
 import type { FetchFn } from "../lib/http.js";
 import { contentDisposition, safeFilename } from "../lib/text.js";
 import { parsePublicId, type ProviderChain, type ResolvedStream } from "../providers/chain.js";
-import { MIME_BY_EXTENSION, extensionForMime } from "../providers/types.js";
+import { MIME_BY_EXTENSION, extensionForMime, verifyLosslessStream } from "../providers/types.js";
 import type { PrepareTracker } from "./prepare.js";
 
 export interface StreamProxyDeps {
@@ -87,6 +87,14 @@ export async function proxyAudio(
   if (res.status === 206 && !res.headers.has("accept-ranges")) reply.header("accept-ranges", "bytes");
 
   const upstreamType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const losslessCheck = verifyLosslessStream(upstreamType);
+  if (!losslessCheck.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    reply.raw.off("close", onClose);
+    throw new AppError("STREAM_UNAVAILABLE", losslessCheck.reason ?? "Only lossless FLAC/ALAC streams are supported", {
+      provider: resolved.servedBy.name,
+    });
+  }
   const ext = resolved.source.extension ?? extensionForMime(upstreamType) ?? "flac";
   const contentType = GENERIC_TYPES.has(upstreamType)
     ? (resolved.source.mimeType ?? MIME_BY_EXTENSION[ext] ?? "audio/flac")

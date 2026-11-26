@@ -2,7 +2,7 @@ import type { ProviderHealth, Track } from "../../../shared/api.js";
 import { AppError, isFailoverEligible } from "../errors.js";
 import { bestMatch } from "../lib/text.js";
 import type { CachedProvider } from "./cached.js";
-import type { ProviderTrack, StreamOptions, StreamSource } from "./types.js";
+import { normalizeLosslessMetadata, type ProviderTrack, type StreamOptions, type StreamSource } from "./types.js";
 
 export interface ResolvedStream {
   source: StreamSource;
@@ -40,7 +40,8 @@ export function parsePublicId(id: string): { provider: string; rawId: string } {
 }
 
 function toPublic(t: ProviderTrack): Track {
-  return { ...t, id: publicId(t.provider, t.id) };
+  const normalized = normalizeLosslessMetadata(t);
+  return { ...normalized, id: publicId(t.provider, t.id) };
 }
 
 /**
@@ -102,7 +103,7 @@ export class ProviderChain {
       try {
         const { tracks, cached } = await p.searchWithMeta(query, options);
         this.recordSuccess(p.name);
-        return { tracks: tracks.map(toPublic), provider: p.name, fallback: p !== this.primary, cached };
+        return { tracks: tracks.filter((t) => t.lossless).map(toPublic), provider: p.name, fallback: p !== this.primary, cached };
       } catch (err) {
         lastErr = err;
         if (!isFailoverEligible(err)) throw err;

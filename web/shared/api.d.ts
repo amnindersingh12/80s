@@ -20,7 +20,9 @@ export interface Track {
   coverUrl?: string;
   /** Container / codec hint, lower-case (`flac`, `wav`, `alac`, `mp3`). */
   format?: string;
+  codec?: "FLAC" | "ALAC";
   lossless: boolean;
+  qualityTier?: "HI-RES LOSSLESS" | "LOSSLESS";
   bitDepth?: number;
   sampleRate?: number;
   bitrateKbps?: number;
