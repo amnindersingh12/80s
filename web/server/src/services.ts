@@ -1,3 +1,4 @@
+import { NoAuth, StaticBearer } from "./auth/static.js";
 import { SupabaseAuth } from "./auth/supabase.js";
 import type { Config } from "./config.js";
 import { createCache, type CacheStore } from "./lib/cache.js";
@@ -5,7 +6,7 @@ import type { FetchFn } from "./lib/http.js";
 import { CachedProvider } from "./providers/cached.js";
 import { ProviderChain } from "./providers/chain.js";
 import { MockAudioProvider } from "./providers/mock.js";
-import { RemoteMediaProvider } from "./providers/remote.js";
+import { RemoteMediaProvider, type TokenSource } from "./providers/remote.js";
 import { SubsonicProvider } from "./providers/subsonic.js";
 import type { AudioProvider } from "./providers/types.js";
 import { LastfmClient } from "./recommendations/lastfm.js";
@@ -52,24 +53,31 @@ export async function createServices(config: Config, overrides: ServiceOverrides
     (await createCache({
       redisUrl: config.redisUrl,
       prefix: config.cachePrefix,
+      maxEntries: config.memoryCacheMaxEntries,
       onError: (err) => log?.warn({ err }, "cache error (continuing without cache)"),
     }));
 
   let demo: MockAudioProvider | undefined;
   let primary = overrides.primary;
   let fallback = overrides.fallback;
-  let auth: SupabaseAuth | undefined;
+  let auth: TokenSource | undefined;
 
   if (!primary) {
     if (config.demo) {
       demo = new MockAudioProvider({ name: "demo", streamUrl: (id) => `demo://audio/${encodeURIComponent(id)}` });
       primary = demo;
     } else if (config.remote) {
-      auth = new SupabaseAuth({
-        ...config.remote.supabase,
-        fetch: fetchFn,
-        onError: (err) => log?.warn({ err: describe(err) }, "media server token refresh failed"),
-      });
+      const r = config.remote;
+      auth =
+        r.authMode === "supabase"
+          ? new SupabaseAuth({
+              ...r.supabase,
+              fetch: fetchFn,
+              onError: (err) => log?.warn({ err: describe(err) }, "media server token refresh failed"),
+            })
+          : r.authMode === "bearer"
+            ? new StaticBearer(r.bearerToken ?? "")
+            : new NoAuth();
       primary = new RemoteMediaProvider({ config: config.remote, auth, fetch: fetchFn });
     } else if (config.subsonic) {
       primary = new SubsonicProvider(config.subsonic, { fetch: fetchFn });
@@ -114,7 +122,7 @@ export async function createServices(config: Config, overrides: ServiceOverrides
     streamFetch: demo ? withDemoAudio(fetchFn, demo) : fetchFn,
     streamTimeoutMs: config.remote?.requestTimeoutMs ?? config.subsonic?.timeoutMs ?? 15_000,
     async close() {
-      auth?.close();
+      auth?.close?.();
       await chain.close();
       await cache.close();
     },

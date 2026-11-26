@@ -24,6 +24,7 @@ import app.simple.felicity.shared.utils.ViewUtils.visible
 import app.simple.felicity.streaming.RemoteMusicRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -116,13 +117,19 @@ class StreamingServer : MediaFragment() {
         showStatus(getString(R.string.remote_testing))
         binding.test.isEnabled = false
         testJob = viewLifecycleOwner.lifecycleScope.launch {
+            // No answer after a few seconds usually means a sleeping free-tier dyno is booting.
+            val wakingHint = launch {
+                delay(WAKE_HINT_MS)
+                showStatus(getString(R.string.remote_waking))
+            }
             val text = try {
-                describe(remote.testConnection(raw, key), key != null)
+                describe(remote.testConnection(raw, key) { showStatus(getString(R.string.remote_waking)) }, key != null)
             } catch (e: InvalidServerUrlException) {
                 "✗ ${e.message}"
             } catch (e: RemoteApiException) {
                 "✗ ${e.message}" + if (e.code == RemoteApiException.NETWORK) "\n${getString(R.string.remote_network_hint)}" else ""
             } finally {
+                wakingHint.cancel()
                 binding.test.isEnabled = true
             }
             showStatus(text)
@@ -180,5 +187,6 @@ class StreamingServer : MediaFragment() {
         fun newInstance(): StreamingServer = StreamingServer()
 
         const val TAG = "StreamingServer"
+        private const val WAKE_HINT_MS = 2_500L
     }
 }

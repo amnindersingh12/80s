@@ -34,6 +34,8 @@ export interface JobFieldMap {
   expiresAt: string;
 }
 
+export type MediaAuthMode = "none" | "bearer" | "supabase";
+
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
@@ -68,6 +70,17 @@ export interface RemoteProviderConfig {
   jobConcurrency: number;
   jobQueueTimeoutMs: number;
   streamAuth: "auto" | "always" | "never";
+  /**
+   * How requests to the media server authenticate (MEDIA_AUTH_MODE, `auto` already resolved):
+   * - `none`: no auth header (guest / public endpoints)
+   * - `bearer`: static `Authorization: Bearer MEDIA_BEARER_TOKEN`
+   * - `supabase`: Supabase password/refresh grants (the `supabase` block below)
+   */
+  authMode: MediaAuthMode;
+  /** What MEDIA_AUTH_MODE said (`auto` resolves to `supabase` or `none`). */
+  authModeSetting: MediaAuthMode | "auto";
+  bearerToken?: string;
+  /** Only used when `authMode` is `supabase`. */
   supabase: SupabaseConfig;
 }
 
@@ -98,6 +111,10 @@ export interface Config {
   clientDistDir?: string;
   redisUrl?: string;
   cachePrefix: string;
+  /** LRU cap of the in-memory cache when REDIS_URL is unset (keeps a 512 MiB dyno safe). */
+  memoryCacheMaxEntries: number;
+  /** MEDIA_FRONTEND_URL: page scanned at startup to fill blank SUPABASE_* / MEDIA_API_BASE. */
+  frontendUrl?: string;
   demo: boolean;
   remote?: RemoteProviderConfig;
   subsonic?: SubsonicConfig;
@@ -254,17 +271,30 @@ export function loadConfig(env: Env = process.env): Config {
   const baseUrl = r.url("MEDIA_API_BASE");
 
   let remote: RemoteProviderConfig | undefined;
+  let authMode: MediaAuthMode | undefined;
+  let authModeSetting: MediaAuthMode | "auto" | undefined;
+  const frontendUrl = r.url("MEDIA_FRONTEND_URL");
   if (baseUrl) {
     const supabaseUrl = r.url("SUPABASE_URL");
     const anonKey = r.str("SUPABASE_ANON_KEY");
     const email = r.str("MEDIA_USER_EMAIL");
     const password = r.str("MEDIA_USER_PASSWORD");
     const refreshToken = r.str("MEDIA_REFRESH_TOKEN");
-    if (!supabaseUrl) r.problems.push("SUPABASE_URL is required when MEDIA_API_BASE is set");
-    if (!anonKey) r.problems.push("SUPABASE_ANON_KEY is required when MEDIA_API_BASE is set");
-    if (!refreshToken && !(email && password)) {
-      r.problems.push("Set MEDIA_USER_EMAIL + MEDIA_USER_PASSWORD (and/or MEDIA_REFRESH_TOKEN)");
+    const bearerToken = r.str("MEDIA_BEARER_TOKEN");
+    authModeSetting = r.oneOf("MEDIA_AUTH_MODE", ["auto", "none", "bearer", "supabase"] as const, "auto");
+    // auto: log in with Supabase when login credentials exist, otherwise guest (no auth).
+    const hasLogin = Boolean(refreshToken || (email && password));
+    authMode = authModeSetting === "auto" ? (hasLogin ? "supabase" : "none") : authModeSetting;
+    if (authMode === "supabase") {
+      const why = authModeSetting === "auto" ? "for the Supabase login (MEDIA_USER_* / MEDIA_REFRESH_TOKEN are set)" : "when MEDIA_AUTH_MODE=supabase";
+      const hint = frontendUrl ? " — MEDIA_FRONTEND_URL discovery didn't find it" : " (or set MEDIA_FRONTEND_URL to discover it)";
+      if (!supabaseUrl) r.problems.push(`SUPABASE_URL is required ${why}${hint}`);
+      if (!anonKey) r.problems.push(`SUPABASE_ANON_KEY is required ${why}${hint}`);
+      if (!refreshToken && !(email && password)) {
+        r.problems.push("MEDIA_AUTH_MODE=supabase needs MEDIA_USER_EMAIL + MEDIA_USER_PASSWORD (and/or MEDIA_REFRESH_TOKEN)");
+      }
     }
+    if (authMode === "bearer" && !bearerToken) r.problems.push("MEDIA_BEARER_TOKEN is required when MEDIA_AUTH_MODE=bearer");
     const method = r.oneOf("MEDIA_JOB_CREATE_METHOD", ["POST", "PUT", "GET"] as const, "POST");
 
     remote = {
@@ -298,6 +328,9 @@ export function loadConfig(env: Env = process.env): Config {
       jobConcurrency: r.int("MEDIA_JOB_CONCURRENCY", 2, 1),
       jobQueueTimeoutMs: r.int("MEDIA_JOB_QUEUE_TIMEOUT_MS", 30_000, 1),
       streamAuth: r.oneOf("MEDIA_STREAM_AUTH", ["auto", "always", "never"] as const, "auto"),
+      authMode,
+      authModeSetting: authModeSetting ?? "auto",
+      bearerToken: authMode === "bearer" ? bearerToken : undefined,
       supabase: {
         url: supabaseUrl ?? "",
         anonKey: anonKey ?? "",
@@ -309,7 +342,11 @@ export function loadConfig(env: Env = process.env): Config {
       },
     };
   } else if (r.str("SUPABASE_URL") || r.str("MEDIA_USER_EMAIL")) {
-    r.problems.push("MEDIA_API_BASE is required when SUPABASE_* / MEDIA_USER_* are set");
+    r.problems.push(
+      frontendUrl
+        ? "MEDIA_API_BASE is required when SUPABASE_* / MEDIA_USER_* are set — MEDIA_FRONTEND_URL discovery didn't find it"
+        : "MEDIA_API_BASE is required when SUPABASE_* / MEDIA_USER_* are set (or set MEDIA_FRONTEND_URL to discover it)",
+    );
   }
 
   let subsonic: SubsonicConfig | undefined;
@@ -359,7 +396,8 @@ export function loadConfig(env: Env = process.env): Config {
   };
 
   const config: Config = {
-    host: r.def("HOST", "127.0.0.1"),
+    // Heroku (DYNO is set) routes to $PORT on all interfaces; locally stay on loopback.
+    host: r.def("HOST", env.DYNO ? "0.0.0.0" : "127.0.0.1"),
     port: r.int("PORT", 8787, 0),
     logLevel: r.def("LOG_LEVEL", "info"),
     trustProxy: r.bool("TRUST_PROXY", false),
@@ -367,13 +405,16 @@ export function loadConfig(env: Env = process.env): Config {
     clientDistDir: r.str("CLIENT_DIST_DIR"),
     redisUrl: r.str("REDIS_URL"),
     cachePrefix: r.def("CACHE_PREFIX", "80s:"),
+    memoryCacheMaxEntries: r.int("MEMORY_CACHE_MAX_ENTRIES", 1_000, 1),
+    frontendUrl,
     demo,
     remote,
     subsonic,
     fallbackCooldownMs: r.int("FALLBACK_COOLDOWN_MS", 30_000, 0),
     cacheTtl: {
       searchMs: r.int("SEARCH_CACHE_TTL_MS", 15 * 60_000, 0),
-      streamUrlMs: r.int("STREAM_URL_CACHE_TTL_MS", 6 * 3_600_000, 0),
+      // Guest (MEDIA_AUTH_MODE=none) links are usually short-lived: 20 min instead of 6 h.
+      streamUrlMs: r.int("STREAM_URL_CACHE_TTL_MS", authMode === "none" ? 1_200_000 : 6 * 3_600_000, 0),
       trackMs: r.int("TRACK_CACHE_TTL_MS", 6 * 3_600_000, 0),
     },
     recommendations,

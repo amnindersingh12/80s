@@ -166,6 +166,20 @@ export interface HealthResponse {
   providers: ProviderHealth[];
   recommendations: Record<RecommendationSource, boolean>;
   cache: "memory" | "redis";
+  /** How the server authenticates to MEDIA_API_BASE (null when no media server is configured). */
+  mediaAuth: "none" | "bearer" | "supabase" | null;
+  /** MEDIA_FRONTEND_URL auto-discovery at startup (`off` also when every value is set explicitly). */
+  discovery: "off" | "ok" | "partial" | "failed";
   accessRequired: boolean;
   authenticated: boolean;
+}
+
+/** `GET /api/doctor` — live configuration diagnostics (needs APP_ACCESS_KEY). */
+export interface DoctorResponse {
+  ok: boolean;
+  steps: { name: string; status: "ok" | "warn" | "fail" | "skip" }[];
+  /** The same text `npm run doctor` prints (secrets masked). */
+  lines: string[];
+  ranAt: string;
+  durationMs: number;
 }

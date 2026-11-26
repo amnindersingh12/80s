@@ -247,9 +247,16 @@ class WebApiClient(
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
 
+        /**
+         * 20 s connect/read: enough for a sleeping free-tier dyno (Heroku Eco, Render, Fly
+         * auto-stop) to boot on the first request, see [withWakeRetry] for the second chance.
+         */
+        const val CONNECT_TIMEOUT_SECONDS = 20L
+        const val READ_TIMEOUT_SECONDS = 20L
+
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .callTimeout(60, TimeUnit.SECONDS)
             .build()
 

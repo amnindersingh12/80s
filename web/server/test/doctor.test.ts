@@ -102,11 +102,43 @@ describe("runDoctor", () => {
   });
 
   it("fails fast on invalid config and skips network checks", async () => {
-    const { result, out } = await run({ MEDIA_API_BASE: "https://media.test", LISTENBRAINZ_ENABLED: "false", MUSICBRAINZ_ENABLED: "false" }, () => {
-      throw new Error("no network expected");
-    });
+    const { result, out } = await run(
+      { MEDIA_API_BASE: "https://media.test", MEDIA_AUTH_MODE: "supabase", LISTENBRAINZ_ENABLED: "false", MUSICBRAINZ_ENABLED: "false" },
+      () => {
+        throw new Error("no network expected");
+      },
+    );
     expect(result.ok).toBe(false);
-    expect(out).toContain("SUPABASE_URL is required");
+    expect(out).toContain("SUPABASE_URL is required when MEDIA_AUTH_MODE=supabase");
+  });
+
+  it("runs live with MEDIA_AUTH_MODE=none: no Supabase, no auth header", async () => {
+    const seen: (string | undefined)[] = [];
+    const { result, out } = await run(
+      { MEDIA_API_BASE: "https://media.test", LISTENBRAINZ_ENABLED: "false", MUSICBRAINZ_ENABLED: "false" },
+      (url, init) => {
+        if (url.pathname === "/auth/v1/token") throw new Error("Supabase must not be called");
+        seen.push((init.headers as Record<string, string>).authorization);
+        return json({ items: [{ id: 1, name: "Song", artist: "Band", codec: "flac" }] });
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(seen).toEqual([undefined]);
+    expect(out).toContain("Live mode against https://media.test (MEDIA_AUTH_MODE=auto → none)");
+    expect(out).toContain('Results array at "items"');
+  });
+
+  it("uses a static bearer token and hints when it is rejected", async () => {
+    const { result, out } = await run(
+      { MEDIA_API_BASE: "https://media.test", MEDIA_AUTH_MODE: "bearer", MEDIA_BEARER_TOKEN: "static-token-123", LISTENBRAINZ_ENABLED: "false", MUSICBRAINZ_ENABLED: "false" },
+      (_url, init) => {
+        expect((init.headers as Record<string, string>).authorization).toBe("Bearer static-token-123");
+        return json({ error: "bad token" }, 401);
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(out).toContain("rejected MEDIA_BEARER_TOKEN");
+    expect(out).not.toContain("static-token-123");
   });
 
   it("checks Last.fm keys", async () => {

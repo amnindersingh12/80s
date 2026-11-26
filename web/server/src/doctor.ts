@@ -12,6 +12,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { ConfigError, loadConfig, type Config, type Env, type TrackFieldMap } from "./config.js";
+import { applyDiscovery, discoverFrontend, jwtPayload, needsDiscovery, type DiscoveryResult } from "./lib/discovery.js";
 import { loadDotEnv } from "./lib/env.js";
 import { getPath, pickArray } from "./lib/fields.js";
 
@@ -19,6 +20,8 @@ type Status = "ok" | "warn" | "fail" | "skip";
 
 export interface DoctorOptions {
   env: Env;
+  /** Startup discovery to reuse instead of scanning MEDIA_FRONTEND_URL again. */
+  discovery?: DiscoveryResult;
   fetch?: typeof fetch;
   log?: (line: string) => void;
   query?: string;
@@ -36,6 +39,7 @@ const SECRET_VARS = new Set([
   "SUPABASE_ANON_KEY",
   "MEDIA_USER_PASSWORD",
   "MEDIA_REFRESH_TOKEN",
+  "MEDIA_BEARER_TOKEN",
   "SUBSONIC_API_KEY",
   "SUBSONIC_PASSWORD",
   "LASTFM_API_KEY",
@@ -46,7 +50,7 @@ const SECRET_VARS = new Set([
 /** Variables shown in step 1, in display order. */
 const SHOWN_VARS = [
   "HOST", "PORT", "APP_ACCESS_KEY", "DEMO_MODE", "REDIS_URL",
-  "MEDIA_API_BASE", "MEDIA_SEARCH_PATH", "MEDIA_SEARCH_PARAM", "MEDIA_SEARCH_RESULTS_PATH", "MEDIA_FIELD_MAP",
+  "MEDIA_FRONTEND_URL", "MEDIA_API_BASE", "MEDIA_AUTH_MODE", "MEDIA_BEARER_TOKEN", "MEDIA_SEARCH_PATH", "MEDIA_SEARCH_PARAM", "MEDIA_SEARCH_RESULTS_PATH", "MEDIA_FIELD_MAP",
   "MEDIA_JOB_CREATE_PATH", "MEDIA_JOB_CREATE_METHOD", "MEDIA_TRACK_ID_FIELD", "MEDIA_JOB_STATUS_PATH", "MEDIA_JOB_FIELD_MAP",
   "SUPABASE_URL", "SUPABASE_ANON_KEY", "MEDIA_USER_EMAIL", "MEDIA_USER_PASSWORD", "MEDIA_REFRESH_TOKEN",
   "SUBSONIC_URL", "SUBSONIC_USER", "SUBSONIC_PASSWORD", "SUBSONIC_API_KEY",
@@ -174,15 +178,21 @@ class Doctor {
   }
 
   async run(): Promise<DoctorResult> {
-    const env = this.opts.env;
+    const rawEnv = this.opts.env;
     this.log("80s web — configuration doctor");
     this.log(this.opts.envFile ? `Loaded ${this.opts.envFile}` : "No .env file found — using process environment only");
 
-    // ---------------------------------------------------------------- 1. env
-    this.heading(1, "Environment");
+    // ---------------------------------------------------- 1. frontend discovery
+    this.heading(1, "MEDIA_FRONTEND_URL discovery");
+    const env = await this.checkDiscovery(rawEnv);
+
+    // ---------------------------------------------------------------- 2. env
+    this.heading(2, "Environment");
     for (const name of SHOWN_VARS) {
       const v = env[name];
-      if (v !== undefined && v.trim() !== "") this.detail(`${name.padEnd(28)} ${displayValue(name, v.trim())}`);
+      if (v === undefined || v.trim() === "") continue;
+      const discovered = !rawEnv[name]?.trim() ? "  (discovered)" : "";
+      this.detail(`${name.padEnd(28)} ${displayValue(name, v.trim())}${discovered}`);
     }
     let config: Config | undefined;
     try {
@@ -197,43 +207,97 @@ class Doctor {
     }
     if (config) {
       if (config.demo) this.line("warn", "DEMO MODE: no MEDIA_API_BASE / SUBSONIC_URL — the server serves synthetic clips");
+      else if (config.remote) {
+        const setting = config.remote.authModeSetting === "auto" ? `auto → ${config.remote.authMode}` : config.remote.authMode;
+        this.line("ok", `Live mode against ${config.remote.baseUrl} (MEDIA_AUTH_MODE=${setting})`);
+      }
       if (!config.accessKey) this.line("warn", "APP_ACCESS_KEY is empty — anyone who can reach the server can use it");
       if (config.host === "127.0.0.1" || config.host === "localhost") {
         this.line("warn", `HOST=${config.host}: only reachable from this machine (use 0.0.0.0 for LAN / Docker / phones)`);
       }
     }
 
-    // ----------------------------------------------------------- 2. supabase
-    this.heading(2, "Supabase login / refresh");
+    // --------------------------------------------------------- 3. media auth
+    this.heading(3, "Media server auth");
     let accessToken: string | undefined;
+    let authUsable = false;
     const remote = config?.remote;
     if (!remote) {
       this.line("skip", "MEDIA_API_BASE not set (or config invalid) — skipped");
-      this.record("supabase", "skip");
+      this.record("auth", "skip");
+    } else if (remote.authMode === "none") {
+      this.line("ok", "MEDIA_AUTH_MODE=none — requests go out without credentials (guest / public API)");
+      if (env.SUPABASE_URL?.trim()) this.line("warn", "SUPABASE_URL is set but ignored because MEDIA_AUTH_MODE=none");
+      this.record("auth", "ok");
+      authUsable = true;
+    } else if (remote.authMode === "bearer") {
+      accessToken = remote.bearerToken;
+      this.line("ok", `MEDIA_AUTH_MODE=bearer — static MEDIA_BEARER_TOKEN ${mask(accessToken ?? "")} (validated by the search below)`);
+      this.record("auth", "ok");
+      authUsable = true;
     } else {
+      this.detail("MEDIA_AUTH_MODE=supabase");
       accessToken = await this.checkSupabase(remote.supabase);
+      authUsable = accessToken !== undefined;
     }
 
-    // ------------------------------------------------------------- 3. search
-    this.heading(3, "Sample media search");
+    // ------------------------------------------------------------- 4. search
+    this.heading(4, "Sample media search");
     if (!remote) {
       this.line("skip", "MEDIA_API_BASE not set — skipped");
       this.record("search", "skip");
-    } else if (!accessToken) {
+    } else if (!authUsable) {
       this.line("skip", "No access token from step 2 — skipped");
       this.record("search", "skip");
     } else {
       await this.checkSearch(remote, accessToken);
     }
 
-    // ------------------------------------------------------ 4. recommendations
-    this.heading(4, "Recommendation sources");
+    // ------------------------------------------------------ 5. recommendations
+    this.heading(5, "Recommendation sources");
     await this.checkRecommendations(config, env);
 
     const failed = this.steps.filter((s) => s.status === "fail");
     this.log("");
     this.log(failed.length ? `✗ ${failed.length} check(s) failed: ${failed.map((s) => s.name).join(", ")}` : "✓ All checks passed");
     return { ok: failed.length === 0, steps: this.steps };
+  }
+
+  /** Runs (or reuses) MEDIA_FRONTEND_URL discovery and returns the env the server would use. */
+  private async checkDiscovery(rawEnv: Env): Promise<Env> {
+    const frontend = rawEnv.MEDIA_FRONTEND_URL?.trim();
+    if (!frontend) {
+      this.line("skip", "MEDIA_FRONTEND_URL not set — using explicit SUPABASE_* / MEDIA_API_BASE only");
+      this.record("discovery", "skip");
+      return rawEnv;
+    }
+    if (!needsDiscovery(rawEnv)) {
+      this.line("skip", "SUPABASE_URL, SUPABASE_ANON_KEY and MEDIA_API_BASE are all set explicitly — nothing to discover");
+      this.record("discovery", "skip");
+      return rawEnv;
+    }
+    const reused = this.opts.discovery?.frontendUrl === frontend;
+    const found = reused ? this.opts.discovery! : await discoverFrontend(frontend, { fetch: this.fetchFn, timeoutMs: this.timeoutMs, deadlineMs: 12_000 });
+    this.detail(`${reused ? "Cached at startup" : "Scanned"}: ${found.scanned.length} file(s) in ${found.durationMs} ms from ${frontend}`);
+    const { env, filled } = applyDiscovery(rawEnv, found);
+    const report = (key: string, label: string, value: string | undefined, shown: string | undefined) => {
+      if (rawEnv[key]?.trim()) this.detail(`${label.padEnd(18)} explicit ${key} (overrides discovery)`);
+      else if (value) this.line("ok", `${label.padEnd(18)} ${shown}`);
+      else this.line("warn", `${label.padEnd(18)} not found in the frontend code — set ${key}`);
+    };
+    report("SUPABASE_URL", "Supabase URL", found.supabaseUrl, found.supabaseUrl);
+    report("SUPABASE_ANON_KEY", "Anon key", found.anonKey, found.anonKey && `${mask(found.anonKey)}${found.anonKey.startsWith("eyJ") ? ` (role=${jwtPayload(found.anonKey)?.role})` : ""}`);
+    report(
+      "MEDIA_API_BASE",
+      "API base",
+      found.apiBase,
+      found.apiBase && `${found.apiBase}${found.apiBaseSource === "frontend-origin" ? "  (guess: frontend origin — no API URL found in code)" : ""}`,
+    );
+    for (const e of found.errors.slice(0, 5)) this.detail(`  ${e}`);
+    const status: Status = found.scanned.length === 0 ? "fail" : filled.length ? "ok" : "warn";
+    if (status === "fail") this.line("fail", `Couldn't load ${frontend}`);
+    this.record("discovery", status);
+    return env;
   }
 
   private async checkSupabase(sb: NonNullable<Config["remote"]>["supabase"]): Promise<string | undefined> {
@@ -290,7 +354,7 @@ class Doctor {
       this.line("warn", "Password grant returned no refresh_token — the server will re-login on every expiry");
     }
 
-    this.record("supabase", failed ? "fail" : accessToken ? "ok" : "fail");
+    this.record("auth", failed ? "fail" : accessToken ? "ok" : "fail");
     return accessToken;
   }
 
@@ -303,17 +367,27 @@ class Doctor {
     }
   }
 
-  private async checkSearch(remote: NonNullable<Config["remote"]>, token: string) {
+  private async checkSearch(remote: NonNullable<Config["remote"]>, token: string | undefined) {
     const query = this.opts.query?.trim() || "love";
     const url = new URL(remote.baseUrl.replace(/\/+$/, "") + remote.searchPath);
     for (const [k, v] of Object.entries(remote.searchExtraParams)) url.searchParams.set(k, v);
     url.searchParams.set(remote.searchParam, query);
     if (remote.searchLimitParam) url.searchParams.set(remote.searchLimitParam, "5");
 
-    const res = await this.http(url.toString(), { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });
+    const headers: Record<string, string> = { accept: "application/json" };
+    if (token) headers.authorization = `Bearer ${token}`;
+    const res = await this.http(url.toString(), { headers });
     if (res.error || res.status < 200 || res.status >= 300) {
       this.reportFailure(`GET ${url.pathname}?${remote.searchParam}=${query}`, res, [token]);
-      if (res.status === 401 || res.status === 403) this.detail("Hint: the media server rejected the Supabase JWT — is it the same Supabase project?");
+      if (res.status === 401 || res.status === 403) {
+        this.detail(
+          remote.authMode === "none"
+            ? "Hint: this endpoint needs credentials — set MEDIA_AUTH_MODE=bearer + MEDIA_BEARER_TOKEN (or supabase)"
+            : remote.authMode === "bearer"
+              ? "Hint: the media server rejected MEDIA_BEARER_TOKEN (expired or wrong token?)"
+              : "Hint: the media server rejected the Supabase JWT — is it the same Supabase project?",
+        );
+      }
       if (res.status === 404) this.detail("Hint: 404 = check MEDIA_API_BASE + MEDIA_SEARCH_PATH");
       this.record("search", "fail");
       return;
@@ -374,12 +448,15 @@ class Doctor {
     let failures = 0;
     let checked = 0;
 
-    // Last.fm
     const lastfmKey = env.LASTFM_API_KEY?.trim();
-    if (!lastfmKey) {
-      this.line("warn", "Last.fm: LASTFM_API_KEY not set — recommendations use ListenBrainz/MusicBrainz only");
-    } else {
-      checked++;
+    const lbEnabled = !(rec && !rec.listenbrainz);
+    const mbEnabled = !(rec && !rec.musicbrainz);
+    const lbToken = rec?.listenbrainz?.token;
+    const mbUserAgent = rec?.musicbrainz?.userAgent ?? "80sWebPlayer/0.1 ( self-hosted; set MUSICBRAINZ_USER_AGENT )";
+
+    // The three sources are independent: query them in parallel, report in a fixed order.
+    const lastfmReq = (() => {
+      if (!lastfmKey) return undefined;
       const base = rec?.lastfm?.baseUrl ?? env.LASTFM_API_BASE ?? "https://ws.audioscrobbler.com/2.0";
       const u = new URL(base.replace(/\/+$/, "") + "/");
       u.searchParams.set("method", "artist.getsimilar");
@@ -387,56 +464,66 @@ class Doctor {
       u.searchParams.set("limit", "1");
       u.searchParams.set("format", "json");
       u.searchParams.set("api_key", lastfmKey);
-      const res = await this.http(u.toString());
-      const body = res.json as { error?: number; message?: string } | undefined;
-      if (res.status === 200 && !body?.error) {
-        this.line("ok", `Last.fm: key accepted (HTTP 200 in ${res.ms} ms)`);
+      return this.http(u.toString());
+    })();
+    const lbBase = (rec?.listenbrainz?.baseUrl ?? "https://api.listenbrainz.org").replace(/\/+$/, "");
+    const lbReq = !lbEnabled
+      ? undefined
+      : lbToken
+        ? this.http(`${lbBase}/1/validate-token`, { headers: { authorization: `Token ${lbToken}` } })
+        : this.http(`${lbBase}/1/stats/sitewide/artists?count=1`);
+    const mbBase = (rec?.musicbrainz?.baseUrl ?? "https://musicbrainz.org/ws/2").replace(/\/+$/, "");
+    const mbReq = !mbEnabled
+      ? undefined
+      : this.http(`${mbBase}/artist?query=artist:radiohead&limit=1&fmt=json`, {
+          headers: { "user-agent": mbUserAgent, accept: "application/json" },
+        });
+    const [lastfm, lb, mb] = await Promise.all([lastfmReq, lbReq, mbReq]);
+
+    // Last.fm
+    if (!lastfm) {
+      this.line("warn", "Last.fm: LASTFM_API_KEY not set — recommendations use ListenBrainz/MusicBrainz only");
+    } else {
+      checked++;
+      const body = lastfm.json as { error?: number; message?: string } | undefined;
+      if (lastfm.status === 200 && !body?.error) {
+        this.line("ok", `Last.fm: key accepted (HTTP 200 in ${lastfm.ms} ms)`);
       } else {
         failures++;
-        const reason = res.error ?? (body?.error ? `error ${body.error}: ${body.message}` : `HTTP ${res.status}`);
+        const reason = lastfm.error ?? (body?.error ? `error ${body.error}: ${body.message}` : `HTTP ${lastfm.status}`);
         this.line("fail", `Last.fm: ${reason}`);
         if (body?.error === 10) this.detail("Hint: error 10 = invalid API key");
       }
     }
 
     // ListenBrainz
-    if (rec && !rec.listenbrainz) {
+    if (!lb) {
       this.line("skip", "ListenBrainz: disabled (LISTENBRAINZ_ENABLED=false)");
     } else {
       checked++;
-      const base = (rec?.listenbrainz?.baseUrl ?? "https://api.listenbrainz.org").replace(/\/+$/, "");
-      const token = rec?.listenbrainz?.token;
-      const res = token
-        ? await this.http(`${base}/1/validate-token`, { headers: { authorization: `Token ${token}` } })
-        : await this.http(`${base}/1/stats/sitewide/artists?count=1`);
-      const valid = token ? (res.json as { valid?: boolean } | undefined)?.valid === true : true;
-      if (res.status >= 200 && res.status < 300 && valid) {
-        this.line("ok", `ListenBrainz: reachable${token ? ", token valid" : ""} (HTTP ${res.status} in ${res.ms} ms)`);
-      } else if (res.status >= 200 && res.status < 300) {
+      const valid = lbToken ? (lb.json as { valid?: boolean } | undefined)?.valid === true : true;
+      if (lb.status >= 200 && lb.status < 300 && valid) {
+        this.line("ok", `ListenBrainz: reachable${lbToken ? ", token valid" : ""} (HTTP ${lb.status} in ${lb.ms} ms)`);
+      } else if (lb.status >= 200 && lb.status < 300) {
         failures++;
         this.line("fail", "ListenBrainz: reachable but LISTENBRAINZ_TOKEN is invalid");
       } else {
         failures++;
-        this.line("fail", `ListenBrainz: ${res.error ?? `HTTP ${res.status}`}`);
+        this.line("fail", `ListenBrainz: ${lb.error ?? `HTTP ${lb.status}`}`);
       }
     }
 
     // MusicBrainz
-    if (rec && !rec.musicbrainz) {
+    if (!mb) {
       this.line("skip", "MusicBrainz: disabled (MUSICBRAINZ_ENABLED=false)");
     } else {
       checked++;
-      const base = (rec?.musicbrainz?.baseUrl ?? "https://musicbrainz.org/ws/2").replace(/\/+$/, "");
-      const ua = rec?.musicbrainz?.userAgent ?? "80sWebPlayer/0.1 ( self-hosted; set MUSICBRAINZ_USER_AGENT )";
-      const res = await this.http(`${base}/artist?query=artist:radiohead&limit=1&fmt=json`, {
-        headers: { "user-agent": ua, accept: "application/json" },
-      });
-      if (res.status === 200) {
-        this.line("ok", `MusicBrainz: reachable (HTTP 200 in ${res.ms} ms)`);
+      if (mb.status === 200) {
+        this.line("ok", `MusicBrainz: reachable (HTTP 200 in ${mb.ms} ms)`);
       } else {
         failures++;
-        this.line("fail", `MusicBrainz: ${res.error ?? `HTTP ${res.status}`}`);
-        if (res.status === 403 || res.status === 503) this.detail("Hint: MusicBrainz throttles generic User-Agents — set MUSICBRAINZ_USER_AGENT with a contact");
+        this.line("fail", `MusicBrainz: ${mb.error ?? `HTTP ${mb.status}`}`);
+        if (mb.status === 403 || mb.status === 503) this.detail("Hint: MusicBrainz throttles generic User-Agents — set MUSICBRAINZ_USER_AGENT with a contact");
       }
       if (!env.MUSICBRAINZ_USER_AGENT?.trim()) {
         this.line("warn", 'MUSICBRAINZ_USER_AGENT not set — use "AppName/1.0 ( you@example.com )" in production');

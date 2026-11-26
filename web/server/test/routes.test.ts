@@ -33,6 +33,8 @@ describe("API routes", () => {
       providers: [{ name: "demo", kind: "mock", role: "primary", circuit: "closed" }],
       recommendations: { lastfm: false, listenbrainz: false, musicbrainz: false },
       cache: "memory",
+      mediaAuth: null,
+      discovery: "off",
       accessRequired: false,
       authenticated: true,
     });

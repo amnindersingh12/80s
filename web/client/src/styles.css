@@ -1406,6 +1406,72 @@ code {
   color: var(--text-2);
 }
 
+/* ---- Diagnostics (/api/doctor) ---- */
+.dialog-wide {
+  width: min(760px, calc(100vw - 16px));
+  max-height: calc(100dvh - 32px);
+}
+.diag-intro {
+  margin: 0;
+  padding: 0 18px 10px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.diag-form {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+.diag-query {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--sep);
+  border-radius: var(--r-md);
+  background: var(--bg-base);
+  color: var(--text-1);
+  font: inherit;
+}
+.diag-error {
+  margin: 0 18px 12px;
+  color: var(--danger);
+}
+.diag-summary {
+  margin: 0 18px 8px;
+  font-weight: 600;
+}
+.diag-summary.ok {
+  color: var(--ok);
+}
+.diag-summary.fail {
+  color: var(--danger);
+}
+.diag-summary span {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.diag-output {
+  margin: 0 18px 18px;
+  padding: 12px;
+  max-height: 60dvh;
+  overflow: auto;
+  border-radius: var(--r-md);
+  background: var(--bg-base);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.diag-output .ok {
+  color: var(--ok);
+}
+.diag-output .fail {
+  color: var(--danger);
+}
+.diag-output .warn {
+  color: var(--warn);
+}
+
 .offline-banner {
   position: fixed;
   top: 0;

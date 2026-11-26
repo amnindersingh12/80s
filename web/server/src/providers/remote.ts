@@ -14,10 +14,15 @@ import {
   type StreamSource,
 } from "./types.js";
 
-/** Anything that can hand out bearer tokens (SupabaseAuth in production). */
+/**
+ * Anything that can hand out bearer tokens: SupabaseAuth, a static MEDIA_BEARER_TOKEN, or
+ * nothing at all (`undefined` → requests go out without an Authorization header).
+ */
 export interface TokenSource {
-  getAccessToken(): Promise<string>;
+  getAccessToken(): Promise<string | undefined>;
   invalidate(rejectedToken?: string): void;
+  /** false for static/no auth: a 401 is final, there is nothing to refresh. Default true. */
+  readonly refreshable?: boolean;
   close?(): void;
 }
 
@@ -127,7 +132,8 @@ export class RemoteMediaProvider implements AudioProvider {
   /** Adds the bearer token for files hosted on the media server itself. */
   async authorizeStream(source: StreamSource): Promise<Record<string, string>> {
     if (!this.needsAuth(source.url)) return {};
-    return { authorization: `Bearer ${await this.options.auth.getAccessToken()}` };
+    const token = await this.options.auth.getAccessToken();
+    return token ? { authorization: `Bearer ${token}` } : {};
   }
 
   close(): void {
@@ -257,11 +263,11 @@ export class RemoteMediaProvider implements AudioProvider {
   // -------------------------------------------------------------- helpers ---
 
   private async authedJson(url: string, req: AuthedRequest): Promise<JsonResponse> {
-    const send = async (token: string) =>
+    const send = async (token: string | undefined) =>
       requestJson(url, {
         method: req.method ?? "GET",
         body: req.body,
-        headers: { authorization: `Bearer ${token}` },
+        headers: token ? { authorization: `Bearer ${token}` } : {},
         timeoutMs: req.timeoutMs,
         retries: req.retries,
         signal: req.signal,
@@ -270,12 +276,17 @@ export class RemoteMediaProvider implements AudioProvider {
         provider: this.name,
       });
 
-    const token = await this.options.auth.getAccessToken();
+    const auth = this.options.auth;
+    const token = await auth.getAccessToken();
     let res = await send(token);
     if (res.status === 401) {
+      if (auth.refreshable === false) {
+        const hint = token ? "MEDIA_BEARER_TOKEN was rejected" : "it needs credentials: set MEDIA_AUTH_MODE=bearer or supabase";
+        throw new AppError("UPSTREAM_AUTH_FAILED", `The media server answered 401 (${hint})`, { upstreamStatus: 401, provider: this.name });
+      }
       // Token revoked or clock skew: refresh once and replay.
-      this.options.auth.invalidate(token);
-      res = await send(await this.options.auth.getAccessToken());
+      auth.invalidate(token);
+      res = await send(await auth.getAccessToken());
       if (res.status === 401) {
         throw new AppError("UPSTREAM_AUTH_FAILED", "The media server rejected our session", { upstreamStatus: 401, provider: this.name });
       }

@@ -38,6 +38,35 @@ Requires Node.js ≥ 22.9. **Demo mode** turns on automatically when neither `ME
 `SUBSONIC_URL` is set. It serves a small catalog of synthetic 16-bit/44.1 kHz WAV clips through
 the same proxy, Range and job code paths, so you can try the UI without a server.
 
+## Zero-DevTools setup (`MEDIA_FRONTEND_URL`)
+
+Set `MEDIA_FRONTEND_URL` to the media site's normal web page (for example
+`https://music.example.com`). Then you can leave `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+`MEDIA_API_BASE` blank:
+
+```bash
+MEDIA_FRONTEND_URL=https://music.example.com
+MEDIA_USER_EMAIL=you@example.com      # optional: omit both for guest mode
+MEDIA_USER_PASSWORD=…
+```
+
+At startup the server fetches the page once, together with its same-origin `<script>` and
+Next.js `/_next/static/…` chunks. It looks for the values every visitor's browser downloads
+anyway:
+
+* **Supabase project URL:** `https://<ref>.supabase.co`.
+* **Public anon key:** a JWT whose payload has `"role":"anon"`, matched to the project ref. The
+  `service_role` keys are ignored. `sb_publishable_…` keys also work.
+* **API base URL:** an absolute URL next to keys such as `API_URL`, `NEXT_PUBLIC_API_…` or
+  `baseURL`. If nothing is found, the frontend's own origin is used and marked as a guess.
+
+The scan has limits: at most 60 files, 3 MB per file, 20 MB in total, 8 s per request and a 25 s
+overall deadline (Heroku must bind `$PORT` within 60 s). It stops as soon as all three values
+are found. The results are kept in memory for the lifetime of the dyno. Explicitly set variables
+always override discovered ones. `npm run doctor` and the Diagnostics dialog show what was found,
+with keys masked, and mark discovered values `(discovered)`. `/api/health` reports
+`discovery: off | ok | partial | failed`.
+
 ## Check your configuration: `npm run doctor`
 
 ```bash
@@ -80,6 +109,24 @@ docker compose --profile redis up -d --build   # + Redis cache: set REDIS_URL=re
   server always uses 8787.
 * `.dockerignore` keeps `.env` and `node_modules` out of the build context. Configuration is
   only read at runtime, via `env_file` or the platform's environment settings.
+* **Heroku (smallest setup: 1 Basic or Eco dyno, 512 MiB, no add-ons).** The repo root has a
+  `Procfile` (`node --max-old-space-size=256 web/server/dist/index.js`), a `package.json` whose
+  `heroku-postbuild` builds `web/` and prunes dev dependencies, and a `.slugignore` that leaves
+  the Android sources out. The slug is about 40 MB. The server binds `0.0.0.0:$PORT` when
+  `DYNO` is set. It finishes in-flight requests within 25 s of `SIGTERM`, streams audio straight
+  through without buffering, and caps the in-memory cache (`MEMORY_CACHE_MAX_ENTRIES`).
+
+  ```bash
+  heroku create <app> && heroku buildpacks:set heroku/nodejs -a <app>
+  heroku config:set -a <app> APP_ACCESS_KEY=$(openssl rand -hex 16) \
+    MEDIA_FRONTEND_URL=https://music.example.com MEDIA_USER_EMAIL=… MEDIA_USER_PASSWORD=…
+  git push heroku feature/streaming-api:main
+  heroku ps:type web=basic -a <app>        # or eco (sleeps after 30 min idle)
+  ```
+
+  Open `https://<app>.herokuapp.com`, unlock with the key, then tap the wrench icon
+  (**Diagnostics**) to run the doctor checks from a phone. `GET /api/doctor` with
+  `Authorization: Bearer <APP_ACCESS_KEY>` returns the same report as JSON.
 * **VPS.** Use the compose file above behind Caddy, nginx or Traefik for TLS, and set
   `TRUST_PROXY=true`.
 * **Railway / Render.** Create a Docker service from this repo with root directory `web/`
@@ -111,7 +158,14 @@ browser ──/api/search──────────────▶ ProviderC
                                        └─▶ Last.fm · ListenBrainz · MusicBrainz
 ```
 
-* **Auth.** `SupabaseAuth` signs in with `POST {SUPABASE_URL}/auth/v1/token?grant_type=password`,
+* **Auth (`MEDIA_AUTH_MODE`).** The default is `auto`. It uses the Supabase login below when
+  `MEDIA_USER_EMAIL` + `MEDIA_USER_PASSWORD` (or `MEDIA_REFRESH_TOKEN`) are set, and otherwise
+  `none`. With `none`, search, job and stream requests go out with no credentials (guest/public
+  endpoints), so `MEDIA_API_BASE` alone is enough for live mode. `bearer` sends a fixed
+  `MEDIA_BEARER_TOKEN`. With `none` and `bearer` a `401` is final, and the error says which
+  variable to set. Tokens only ever live in memory: after a dyno sleeps or restarts, the
+  server simply logs in again on the first request.
+* **Supabase auth.** `SupabaseAuth` signs in with `POST {SUPABASE_URL}/auth/v1/token?grant_type=password`,
   sending the `apikey` header. It keeps the JWT in memory behind an async lock, so 25 concurrent
   requests cause one grant. It refreshes with `grant_type=refresh_token` 60 s before expiry, both
   on a timer and lazily on each request, and keeps Supabase's rotated refresh tokens. A `401`
@@ -232,7 +286,7 @@ served from that same origin, never to R2 or a CDN.
 
 | Variable | Default | Description |
 |---|---|---|
-| `HOST` | `127.0.0.1` | bind address (`0.0.0.0` for LAN/Docker) |
+| `HOST` | `127.0.0.1` (`0.0.0.0` on Heroku) | bind address (`0.0.0.0` for LAN/Docker) |
 | `PORT` | `8787` | HTTP port |
 | `LOG_LEVEL` | `info` | pino log level |
 | `TRUST_PROXY` | `false` | trust `X-Forwarded-*` from a reverse proxy (Secure cookie over HTTPS) |
@@ -245,16 +299,20 @@ served from that same origin, never to R2 or a CDN.
 | Variable | Default | Description |
 |---|---|---|
 | `REDIS_URL` | – | use Redis instead of the in-memory LRU |
+| `MEMORY_CACHE_MAX_ENTRIES` | `1000` | entry cap of the in-memory LRU (keeps a 512 MiB dyno safe) |
 | `CACHE_PREFIX` | `80s:` | Redis key prefix |
 | `SEARCH_CACHE_TTL_MS` | `900000` | search results (15 min) |
-| `STREAM_URL_CACHE_TTL_MS` | `21600000` | resolved signed URLs (6 h, capped by URL expiry) |
+| `STREAM_URL_CACHE_TTL_MS` | `21600000` (`1200000` when auth resolves to `none`) | resolved signed URLs (6 h, or 20 min for short-lived guest links; always capped by URL expiry) |
 | `TRACK_CACHE_TTL_MS` | `21600000` | track metadata (6 h) |
 
-### Primary provider and Supabase auth
+### Primary provider and auth
 
 | Variable | Default | Description |
 |---|---|---|
-| `MEDIA_API_BASE` | – | media server base URL (enables the primary provider) |
+| `MEDIA_API_BASE` | – | media server base URL (enables the primary provider, live mode) |
+| `MEDIA_FRONTEND_URL` | – | the media site's web page; blank `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `MEDIA_API_BASE` are discovered from its public JS at startup ([details](#zero-devtools-setup-media_frontend_url)) |
+| `MEDIA_AUTH_MODE` | `auto` | `auto`: `supabase` when `MEDIA_USER_EMAIL` + `MEDIA_USER_PASSWORD` (or `MEDIA_REFRESH_TOKEN`) are set, else `none` · `supabase`: password/refresh grants · `bearer`: `Authorization: Bearer MEDIA_BEARER_TOKEN` · `none`: no auth header (guest/public API) |
+| `MEDIA_BEARER_TOKEN` | – | static token for `MEDIA_AUTH_MODE=bearer` |
 | `MEDIA_SEARCH_PATH` | `/api/search` | search endpoint |
 | `MEDIA_SEARCH_PARAM` | `q` | query parameter name |
 | `MEDIA_SEARCH_LIMIT_PARAM` | – | page-size parameter name |
@@ -277,8 +335,8 @@ served from that same origin, never to R2 or a CDN.
 | `MEDIA_JOB_RETRIES` | `1` | retries on transient 5xx/timeout |
 | `MEDIA_JOB_CONCURRENCY` | `2` | simultaneous jobs |
 | `MEDIA_JOB_QUEUE_TIMEOUT_MS` | `30000` | wait for a job slot → 503 |
-| `SUPABASE_URL` | – | Supabase project URL (required with `MEDIA_API_BASE`) |
-| `SUPABASE_ANON_KEY` | – | anon key, sent as `apikey` (required with `MEDIA_API_BASE`) |
+| `SUPABASE_URL` | – (discovered) | Supabase project URL (Supabase login only) |
+| `SUPABASE_ANON_KEY` | – (discovered) | anon key, sent as `apikey` (Supabase login only) |
 | `MEDIA_USER_EMAIL` / `MEDIA_USER_PASSWORD` | – | password-grant credentials |
 | `MEDIA_REFRESH_TOKEN` | – | seed an existing session |
 | `MEDIA_TOKEN_REFRESH_MARGIN_MS` | `60000` | refresh this long before expiry |

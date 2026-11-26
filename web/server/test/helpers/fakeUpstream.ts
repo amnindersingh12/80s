@@ -17,6 +17,10 @@ export interface FakeState {
   searchCalls: Array<{ url: URL; auth?: string }>;
   searchResponse: unknown;
   searchDelayMs: number;
+  /** false = guest/public media API that accepts requests without credentials. */
+  requireAuth: boolean;
+  /** Authorization header (or undefined) of every media API request, in order. */
+  mediaAuthHeaders: Array<{ path: string; auth?: string }>;
   /** Respond 401 to the next N media requests (token revoked). */
   rejectNextMediaRequests: number;
   jobs: Map<string, { trackId: string; polls: number }>;
@@ -75,6 +79,8 @@ export async function startFakeUpstream(overrides: Partial<FakeState> = {}): Pro
     },
     searchDelayMs: 0,
     rejectNextMediaRequests: 0,
+    requireAuth: true,
+    mediaAuthHeaders: [],
     jobs: new Map(),
     jobCreateBodies: [],
     pollsUntilDone: 2,
@@ -94,10 +100,12 @@ export async function startFakeUpstream(overrides: Partial<FakeState> = {}): Pro
   };
 
   const mediaAuthorized = (req: IncomingMessage): boolean => {
+    state.mediaAuthHeaders.push({ path: new URL(req.url ?? "/", base).pathname, auth: req.headers.authorization });
     if (state.rejectNextMediaRequests > 0) {
       state.rejectNextMediaRequests--;
       return false;
     }
+    if (!state.requireAuth) return true;
     const token = req.headers.authorization?.replace(/^Bearer /, "");
     return token !== undefined && state.validTokens.has(token);
   };

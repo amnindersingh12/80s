@@ -6,6 +6,7 @@ import { Icon, Spinner } from "./components/Icons";
 import { PlayerBar } from "./components/PlayerBar";
 import { QueueDrawer } from "./components/QueueDrawer";
 import { SearchPanel } from "./components/SearchPanel";
+import { DiagnosticsDialog } from "./components/DiagnosticsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { UnlockScreen } from "./components/UnlockScreen";
 import { storage } from "./lib/storage";
@@ -64,6 +65,7 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
   const [query, setQuery] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [tab, setTab] = useState<"search" | "discover">("search");
   const [theme, cycleTheme] = useTheme();
   const searchRef = useRef<HTMLInputElement>(null);
@@ -225,6 +227,11 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
         </form>
         <div className="topbar-right">
           <ProviderStatus health={health} />
+          {health?.accessRequired && (
+            <button className="icon-btn" aria-label="Diagnostics" title="Diagnostics" onClick={() => setDiagOpen(true)}>
+              <Icon name="wrench" />
+            </button>
+          )}
           <button className="icon-btn hide-sm" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" onClick={() => setHelpOpen(true)}>
             <Icon name="keyboard" />
           </button>
@@ -251,6 +258,7 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
       <PlayerBar onToggleQueue={() => setQueueOpen((o) => !o)} queueOpen={queueOpen} />
       <QueueDrawer open={queueOpen} onClose={() => setQueueOpen(false)} />
       <ShortcutsDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <DiagnosticsDialog open={diagOpen} onClose={() => setDiagOpen(false)} />
     </div>
   );
 }

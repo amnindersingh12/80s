@@ -115,8 +115,10 @@ export async function createCache(options: {
   redisUrl?: string;
   prefix?: string;
   onError?: (err: unknown) => void;
+  /** Entry cap for the in-memory store (used when REDIS_URL is unset). */
+  maxEntries?: number;
 }): Promise<CacheStore> {
-  if (!options.redisUrl) return new MemoryCache();
+  if (!options.redisUrl) return new MemoryCache(options.maxEntries);
   const { Redis } = await import("ioredis");
   const client = new Redis(options.redisUrl, {
     lazyConnect: true,

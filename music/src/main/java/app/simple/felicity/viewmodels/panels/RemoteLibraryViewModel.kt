@@ -9,11 +9,13 @@ import app.simple.felicity.remote.RemoteApiException
 import app.simple.felicity.remote.RemoteCatalog
 import app.simple.felicity.remote.SearchResult
 import app.simple.felicity.remote.ServerHealth
+import app.simple.felicity.remote.withWakeRetry
 import app.simple.felicity.streaming.RemoteMusicRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,6 +60,11 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
     val recommendations: StateFlow<Loadable<Recommendations>> = _recommendations.asStateFlow()
 
     private var recJob: Job? = null
+
+    private val _waking = MutableStateFlow(false)
+
+    /** True while a request is slow enough that the server is probably waking from sleep. */
+    val waking: StateFlow<Boolean> = _waking.asStateFlow()
 
     init {
         refreshHealth()
@@ -129,18 +136,28 @@ class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicReposito
         return RecommendationSeed.track(artist, title)
     }
 
-    private suspend fun <T> load(block: suspend () -> T): Loadable<T> = try {
-        Loadable.Loaded(block())
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: RemoteApiException) {
-        Loadable.Failed(e.message, e.isAccessDenied)
-    } catch (e: Exception) {
-        Loadable.Failed(e.message ?: e.javaClass.simpleName)
+    private suspend fun <T> load(block: suspend () -> T): Loadable<T> {
+        val hint = viewModelScope.launch {
+            delay(WAKE_HINT_MS)
+            _waking.value = true
+        }
+        return try {
+            Loadable.Loaded(withWakeRetry({ _waking.value = true }) { block() })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RemoteApiException) {
+            Loadable.Failed(e.message, e.isAccessDenied)
+        } catch (e: Exception) {
+            Loadable.Failed(e.message ?: e.javaClass.simpleName)
+        } finally {
+            hint.cancel()
+            _waking.value = false
+        }
     }
 
     companion object {
         const val DEFAULT_GENRE = "punjabi pop"
+        private const val WAKE_HINT_MS = 2_500L
 
         /** Genre / regional chips shown on Discover (same set as the web player); value = tag seed. */
         val GENRES = listOf(

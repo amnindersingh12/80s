@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type FastifyServerOptions } from "fastify";
 import fastifyStatic from "@fastify/static";
 import type {
+  DoctorResponse,
   ErrorCode,
   HealthResponse,
   PrepareStatus,
@@ -15,7 +16,9 @@ import type {
   SearchResponse,
   SeedType,
 } from "../../shared/api.js";
-import type { Config } from "./config.js";
+import type { Config, Env } from "./config.js";
+import { runDoctor } from "./doctor.js";
+import type { DiscoveryResult } from "./lib/discovery.js";
 import { AppError, isAppError, toAppError } from "./errors.js";
 import { sleep } from "./lib/http.js";
 import { renderDemoCover } from "./providers/mock.js";
@@ -28,6 +31,12 @@ export interface BuildAppOptions {
   config: Config;
   services: AppServices;
   logger?: FastifyServerOptions["logger"];
+  /** Raw environment for `/api/doctor` (default `process.env`). */
+  env?: Env;
+  /** fetch used by `/api/doctor` (tests). */
+  doctorFetch?: typeof fetch;
+  /** Startup MEDIA_FRONTEND_URL discovery, reused by health and `/api/doctor`. */
+  discovery?: { result: DiscoveryResult; filled: string[] };
 }
 
 const idParams = {
@@ -49,7 +58,7 @@ const seedProps = {
   tag: { type: "string", maxLength: 100 },
 } as const;
 
-export async function buildApp({ config, services, logger = false }: BuildAppOptions): Promise<FastifyInstance> {
+export async function buildApp({ config, services, logger = false, env = process.env, doctorFetch, discovery }: BuildAppOptions): Promise<FastifyInstance> {
   const app = Fastify({
     logger:
       logger === true
@@ -140,9 +149,49 @@ export async function buildApp({ config, services, logger = false }: BuildAppOpt
     providers: chain.health(),
     recommendations: engine.enabledSources,
     cache: services.cache.kind,
+    mediaAuth: config.remote?.authMode ?? null,
+    // off: no MEDIA_FRONTEND_URL (or every value was set explicitly) · failed: page unreachable ·
+    // partial: some values not found in the frontend code
+    discovery: !discovery
+      ? "off"
+      : discovery.result.scanned.length === 0
+        ? "failed"
+        : discovery.result.supabaseUrl && discovery.result.anonKey && discovery.result.apiBaseSource === "code"
+          ? "ok"
+          : "partial",
     accessRequired: Boolean(accessKey),
     authenticated: isAuthenticated(request),
   }));
+
+  // ------------------------------------------------------------ doctor ---
+  // Same checks as `npm run doctor`, for phones without a shell. Only available with
+  // APP_ACCESS_KEY set (the gate above then requires it); one run at a time, short-cached,
+  // per-request timeouts kept low so the whole run stays under Heroku's 30 s router limit.
+  let doctorRun: Promise<DoctorResponse> | undefined;
+  let doctorCache: { at: number; value: DoctorResponse } | undefined;
+  app.get<{ Querystring: { q?: string } }>(
+    "/api/doctor",
+    { schema: { querystring: { type: "object", properties: { q: { type: "string", maxLength: 100 } } } } },
+    async (request, reply): Promise<DoctorResponse> => {
+      if (!accessKey) throw new AppError("NOT_CONFIGURED", "Set APP_ACCESS_KEY to enable /api/doctor");
+      reply.header("cache-control", "no-store");
+      const query = request.query.q?.trim() ?? "";
+      if (!query && doctorCache && Date.now() - doctorCache.at < 10_000) return doctorCache.value;
+      doctorRun ??= (async () => {
+        const started = Date.now();
+        const lines: string[] = [];
+        try {
+          const result = await runDoctor({ env, query, fetch: doctorFetch, timeoutMs: 6_000, discovery: discovery?.result, log: (l) => lines.push(l) });
+          const value: DoctorResponse = { ok: result.ok, steps: result.steps, lines, ranAt: new Date(started).toISOString(), durationMs: Date.now() - started };
+          doctorCache = { at: Date.now(), value };
+          return value;
+        } finally {
+          doctorRun = undefined;
+        }
+      })();
+      return doctorRun;
+    },
+  );
 
   // ------------------------------------------------------------ search ---
   app.get<{ Querystring: { q: string; limit: number } }>(

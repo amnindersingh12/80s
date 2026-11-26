@@ -17,6 +17,7 @@ import app.simple.felicity.remote.SearchResult
 import app.simple.felicity.remote.ServerConfig
 import app.simple.felicity.remote.ServerHealth
 import app.simple.felicity.remote.WebApiClient
+import app.simple.felicity.remote.withWakeRetry
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -83,17 +84,19 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
 
     // ------------------------------------------------------------- browse ---
 
-    suspend fun health(): ServerHealth = api.health()
+    suspend fun health(onWaking: () -> Unit = {}): ServerHealth = withWakeRetry(onWaking) { api.health() }
 
     /**
      * Checks settings the user typed but hasn't saved yet: hits `GET /api/health` on [rawUrl]
      * with [accessKey]. Throws [app.simple.felicity.remote.InvalidServerUrlException] for an
      * unusable address and [RemoteApiException] for network/server errors.
      */
-    suspend fun testConnection(rawUrl: String, accessKey: String?): ServerHealth {
+    suspend fun testConnection(rawUrl: String, accessKey: String?, onWaking: () -> Unit = {}): ServerHealth {
         val cfg = ServerConfig.from(rawUrl, accessKey)
             ?: throw app.simple.felicity.remote.InvalidServerUrlException("Enter the server address")
-        return WebApiClient({ cfg }).health()
+        val client = WebApiClient({ cfg })
+        // A sleeping free-tier dyno (Heroku Eco …) can miss the first request: one retry.
+        return withWakeRetry(onWaking) { client.health() }
     }
 
     suspend fun search(query: String): SearchResult = api.search(query)

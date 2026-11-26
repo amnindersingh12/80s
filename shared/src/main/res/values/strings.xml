@@ -649,4 +649,5 @@
     <string name="remote_provider_ok">OK</string>
     <string name="remote_provider_down">Unavailable (circuit open)</string>
     <string name="remote_nothing_playing">Nothing is playing yet</string>
+    <string name="remote_waking">Waking server… (free hosting sleeps when idle — this can take up to 30 s)</string>
 </resources>

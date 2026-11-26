@@ -56,7 +56,9 @@ describe("loadConfig", () => {
       expect(msg).toContain("MEDIA_API_BASE must be an absolute http(s) URL");
       expect(msg).toContain("MEDIA_API_BASE is required");
     }
-    expect(() => loadConfig({ ...base, MEDIA_USER_PASSWORD: undefined })).toThrow(/MEDIA_USER_EMAIL \+ MEDIA_USER_PASSWORD/);
+    // auto mode treats a half-filled login as guest; explicit supabase mode insists on it.
+    expect(loadConfig({ ...base, MEDIA_USER_PASSWORD: undefined }).remote?.authMode).toBe("none");
+    expect(() => loadConfig({ ...base, MEDIA_AUTH_MODE: "supabase", MEDIA_USER_PASSWORD: undefined })).toThrow(/MEDIA_USER_EMAIL \+ MEDIA_USER_PASSWORD/);
     expect(() => loadConfig({ ...base, SUPABASE_ANON_KEY: "" })).toThrow(/SUPABASE_ANON_KEY is required/);
     expect(() => loadConfig({ ...base, MEDIA_JOB_POLL_INTERVAL_MS: "fast" })).toThrow(/MEDIA_JOB_POLL_INTERVAL_MS/);
   });

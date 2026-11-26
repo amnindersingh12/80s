@@ -71,6 +71,15 @@ Kotlin `:remote` module plus thin wiring in `:preferences`, `:engine`, `:reposit
 - [x] `npm run doctor`: masked env diagnostics, Supabase password + refresh grant (exact status + body), sample search with raw top-level keys vs `MEDIA_*` mappings, Last.fm / ListenBrainz / MusicBrainz reachability
 - [x] CI: Docker image build + demo-mode healthcheck smoke test
 
+## 7. Heroku-only deployment & flexible auth
+- [x] `MEDIA_AUTH_MODE=auto` (default) | `supabase` | `bearer` | `none`; auto = Supabase login when `MEDIA_USER_*`/`MEDIA_REFRESH_TOKEN` are set, else guest `none` (live mode, no Supabase vars)
+- [x] `MEDIA_FRONTEND_URL` auto-discovery of public Supabase URL, anon key and API base from the page + Next.js chunks (bounded, in-memory, explicit env wins)
+- [x] Stream-URL cache TTL: 6 h authenticated, 20 min in `none` mode; `MEMORY_CACHE_MAX_ENTRIES` cap (1000)
+- [x] Root `Procfile`, `package.json` (`node 24.x`, `heroku-postbuild` build + prune), `.slugignore`; `0.0.0.0` on `DYNO`; 25 s SIGTERM grace
+- [x] `GET /api/doctor` (requires `APP_ACCESS_KEY`, < 30 s router limit) + web UI Diagnostics dialog
+- [x] Android: 20 s connect/read timeouts, one cold-start retry, "Waking server…" status
+- [x] `.github/workflows/android-apk.yml`: `:remote:test` + `:music:assembleFossDebug`, APK artifact
+
 ## Verification log
 - `npm run typecheck` — server + client, 0 errors
 - `npm test` — server suite (with `TEST_REDIS_URL` for the Redis round-trip) + client queue reducer suite, all passing

@@ -1,0 +1,26 @@
+# Heroku only runs web/ — keep the Android sources, assets and tooling out of the slug.
+/blur
+/core
+/decorations
+/engine
+/fastlane
+/gradle
+/inspirations
+/milkdrop
+/music
+/preferences
+/references
+/remote
+/repository
+/samples
+/screenshots
+/shared
+/theme
+/.idea
+/.github
+/gradlew
+/gradlew.bat
+*.gradle
+gradle.properties
+crowdin.yml
+changelogs.md

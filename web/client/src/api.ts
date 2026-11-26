@@ -1,4 +1,5 @@
 import type {
+  DoctorResponse,
   ErrorCode,
   HealthResponse,
   PrepareStatus,
@@ -78,6 +79,8 @@ const enc = encodeURIComponent;
 
 export const api = {
   health: (signal?: AbortSignal) => request<HealthResponse>("/api/health", { signal }),
+  /** Live config diagnostics (same as `npm run doctor`); needs APP_ACCESS_KEY on the server. */
+  doctor: (q?: string, signal?: AbortSignal) => request<DoctorResponse>(`/api/doctor${q ? `?q=${encodeURIComponent(q)}` : ""}`, { signal }),
   unlock: (key: string) => request<{ ok: boolean }>("/api/session", { method: "POST", body: JSON.stringify({ key }) }),
   lock: () => request<{ ok: boolean }>("/api/session", { method: "DELETE" }),
   search: (q: string, signal?: AbortSignal) => request<SearchResponse>(`/api/search?q=${enc(q)}&limit=30`, { signal }),

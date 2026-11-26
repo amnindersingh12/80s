@@ -1,13 +1,40 @@
 import { buildApp } from "./app.js";
 import { ConfigError, loadConfig } from "./config.js";
+import { mask } from "./doctor.js";
+import { applyDiscovery, discoverFrontend, needsDiscovery, type DiscoveryResult } from "./lib/discovery.js";
 import { loadDotEnv } from "./lib/env.js";
 import { createServices } from "./services.js";
 
+/** One-time MEDIA_FRONTEND_URL scan (kept in memory for the dyno's lifetime). */
+async function discover(): Promise<{ env: NodeJS.ProcessEnv; discovery?: DiscoveryResult; filled: string[] }> {
+  if (!needsDiscovery(process.env)) return { env: process.env, filled: [] };
+  const frontend = process.env.MEDIA_FRONTEND_URL!.trim();
+  const discovery = await discoverFrontend(frontend);
+  const { env, filled } = applyDiscovery(process.env, discovery);
+  console.log(
+    JSON.stringify({
+      level: 30,
+      msg: "MEDIA_FRONTEND_URL discovery",
+      frontend,
+      filled,
+      supabaseUrl: discovery.supabaseUrl,
+      anonKey: discovery.anonKey ? mask(discovery.anonKey) : undefined,
+      apiBase: discovery.apiBase,
+      apiBaseSource: discovery.apiBaseSource,
+      scanned: discovery.scanned.length,
+      errors: discovery.errors.slice(0, 5),
+      ms: discovery.durationMs,
+    }),
+  );
+  return { env, discovery, filled };
+}
+
 async function main(): Promise<void> {
   loadDotEnv();
+  const { env, discovery, filled } = await discover();
   let config;
   try {
-    config = loadConfig();
+    config = loadConfig(env);
   } catch (err) {
     if (err instanceof ConfigError) {
       console.error(err.message);
@@ -17,7 +44,7 @@ async function main(): Promise<void> {
   }
 
   const services = await createServices(config);
-  const app = await buildApp({ config, services, logger: true });
+  const app = await buildApp({ config, services, logger: true, env: process.env, discovery: discovery && { result: discovery, filled } });
   // Re-wire service warnings into the app logger now that it exists.
   const address = await app.listen({ host: config.host, port: config.port });
   app.log.info(
@@ -36,7 +63,11 @@ async function main(): Promise<void> {
     if (closing) return;
     closing = true;
     app.log.info(`${signal} received, shutting down`);
-    const force = setTimeout(() => process.exit(1), 10_000);
+    // Heroku sends SIGTERM and SIGKILLs 30 s later: finish in-flight streams within 25 s.
+    const force = setTimeout(() => {
+      app.log.warn("shutdown took longer than 25 s, forcing exit");
+      process.exit(1);
+    }, 25_000);
     force.unref();
     await app.close();
     process.exit(0);

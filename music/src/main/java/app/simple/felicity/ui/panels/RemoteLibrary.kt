@@ -78,6 +78,12 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         owner.lifecycleScope.launch {
             owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch { viewModel.health.collect(::showHealth) }
+                launch {
+                    viewModel.waking.collect {
+                        showHealth(viewModel.health.value)
+                        render()
+                    }
+                }
                 launch { remote.prepare.collect(::showPrepare) }
                 launch {
                     remote.radio.collect { radio ->
@@ -147,7 +153,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     private fun showHealth(state: Loadable<ServerHealth>) {
         binding.serverStatus.text = when (state) {
             Loadable.Idle -> if (remote.isConfigured()) "" else getString(R.string.remote_not_configured)
-            Loadable.Loading -> getString(R.string.remote_loading)
+            Loadable.Loading -> loadingText()
             is Loadable.Failed -> if (state.accessDenied) getString(R.string.remote_status_locked) else "✗ ${state.message}"
             is Loadable.Loaded -> {
                 val h = state.value
@@ -230,7 +236,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
 
     private fun searchItems(): List<RemoteItem> = when (val s = viewModel.search.value) {
         Loadable.Idle -> listOf(RemoteItem.Message(getString(R.string.remote_search_empty)))
-        Loadable.Loading -> listOf(RemoteItem.Message(getString(R.string.remote_loading)))
+        Loadable.Loading -> listOf(RemoteItem.Message(loadingText()))
         is Loadable.Failed -> listOf(failure(s) { viewModel.retrySearch() })
         is Loadable.Loaded -> searchResults(s.value)
     }
@@ -257,7 +263,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         )
         when (val r = viewModel.recommendations.value) {
             Loadable.Idle -> Unit
-            Loadable.Loading -> items += RemoteItem.Message(getString(R.string.remote_loading))
+            Loadable.Loading -> items += RemoteItem.Message(loadingText())
             is Loadable.Failed -> items += failure(r) { seed?.let(viewModel::discover) }
             is Loadable.Loaded -> items += recommendationItems(r.value)
         }
@@ -303,6 +309,9 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         }
         return items
     }
+
+    private fun loadingText(): String =
+        getString(if (viewModel.waking.value) R.string.remote_waking else R.string.remote_loading)
 
     private fun trackItem(track: RemoteTrack, reason: String? = track.reason): RemoteItem.Track {
         // Mapping registers the track in RemoteCatalog (covers, notification artwork).
