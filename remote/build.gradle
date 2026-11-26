@@ -1,0 +1,32 @@
+// Pure Kotlin/JVM module: typed client for the web/ Fastify API.
+// No Android dependencies, so its unit tests run on a plain JVM in seconds.
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21
+    }
+}
+
+dependencies {
+    api 'com.squareup.okhttp3:okhttp:5.5.1'
+    api 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0'
+    implementation 'com.google.code.gson:gson:2.15.0'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0'
+}
+
+test {
+    testLogging {
+        events "failed"
+        exceptionFormat "full"
+    }
+}

@@ -124,6 +124,7 @@ dependencies {
     implementation project(':theme')
     implementation project(':decorations')
     implementation project(':preferences')
+    implementation project(':remote')
     implementation project(':core')
     implementation project(':shared')
     implementation project(':repository')

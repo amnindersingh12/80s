@@ -19,6 +19,8 @@ import app.simple.felicity.engine.managers.MediaPlaybackManager.originalQueue
 import app.simple.felicity.engine.managers.MediaPlaybackManager.pendingSeekPositions
 import app.simple.felicity.preferences.PlayerPreferences
 import app.simple.felicity.preferences.ShufflePreferences
+import app.simple.felicity.remote.RemoteCatalog
+import app.simple.felicity.remote.RemoteIds
 import app.simple.felicity.repository.constants.MediaConstants
 import app.simple.felicity.repository.listeners.MediaStateListener
 import app.simple.felicity.repository.models.Audio
@@ -53,7 +55,9 @@ import kotlin.time.Duration.Companion.milliseconds
  * it directly. Otherwise, we wrap it as a file:// URI the old-fashioned way.
  */
 private fun String.toPlaybackUri(): Uri {
-    return if (this.startsWith("content://")) {
+    return if (this.startsWith("content://") || RemoteIds.isRemoteUri(this)) {
+        // content:// from SAF, or http(s):// for tracks streamed from the web/ server
+        // (ExoPlayer streams those with HTTP Range requests, so seeking works).
         this.toUri()
     } else {
         File(this).toUri()
@@ -68,16 +72,19 @@ private fun String.toPlaybackUri(): Uri {
  * Null or blank fields are automatically replaced with "Unknown" by the utility functions.
  */
 private fun Audio.toMediaItem(): MediaItem {
+    val metadata = MediaMetadata.Builder()
+        .setTitle(getProperTitle())
+        .setArtist(getProperArtists())
+        .setAlbumTitle(getProperAlbum())
+
+    // Streaming tracks have no local file for the notification to pull artwork from, so
+    // point Media3 at the cover the server reported (lock screen + notification).
+    RemoteCatalog.get(id)?.coverUrl?.let { metadata.setArtworkUri(it.toUri()) }
+
     return MediaItem.Builder()
         .setMediaId(id.toString())
         .setUri(uri.toPlaybackUri())
-        .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(getProperTitle())
-                    .setArtist(getProperArtists())
-                    .setAlbumTitle(getProperAlbum())
-                    .build()
-        )
+        .setMediaMetadata(metadata.build())
         .build()
 }
 
@@ -1176,18 +1183,7 @@ object MediaPlaybackManager {
             val addedAt = newList.size - 1
             pendingSeekPositions.add(addedAt)
             scope.launch {
-                val uri = audio.uri.toPlaybackUri()
-                val mediaItem = MediaItem.Builder()
-                    .setMediaId(audio.id.toString())
-                    .setUri(uri)
-                    .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(audio.getProperTitle())
-                                .setArtist(audio.getProperArtists())
-                                .setAlbumTitle(audio.getProperAlbum())
-                                .build()
-                    )
-                    .build()
+                val mediaItem = audio.toMediaItem()
                 mediaController?.addMediaItem(mediaItem)
             }
             scope.launch {
@@ -1234,18 +1230,7 @@ object MediaPlaybackManager {
             pendingSeekPositions.add(insertAt)
 
             scope.launch {
-                val uri = audio.uri.toPlaybackUri()
-                val mediaItem = MediaItem.Builder()
-                    .setMediaId(audio.id.toString())
-                    .setUri(uri)
-                    .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(audio.getProperTitle())
-                                .setArtist(audio.getProperArtists())
-                                .setAlbumTitle(audio.getProperAlbum())
-                                .build()
-                    )
-                    .build()
+                val mediaItem = audio.toMediaItem()
                 mediaController?.addMediaItem(insertAt, mediaItem)
             }
             scope.launch {
@@ -1299,18 +1284,7 @@ object MediaPlaybackManager {
             pendingSeekPositions.add(insertAt)
 
             scope.launch {
-                val uri = audio.uri.toPlaybackUri()
-                val mediaItem = MediaItem.Builder()
-                    .setMediaId(audio.id.toString())
-                    .setUri(uri)
-                    .setMediaMetadata(
-                            MediaMetadata.Builder()
-                                .setTitle(audio.getProperTitle())
-                                .setArtist(audio.getProperArtists())
-                                .setAlbumTitle(audio.getProperAlbum())
-                                .build()
-                    )
-                    .build()
+                val mediaItem = audio.toMediaItem()
                 mediaController?.addMediaItem(insertAt, mediaItem)
                 mediaController?.seekTo(insertAt, 0L)
                 mediaController?.play()

@@ -10,6 +10,7 @@ import app.simple.felicity.extensions.viewmodels.WrappedViewModel
 import app.simple.felicity.repository.database.instances.AudioDatabase
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.models.WaveformData
+import app.simple.felicity.remote.RemoteIds
 import com.linc.amplituda.Amplituda
 import com.linc.amplituda.Cache
 import com.linc.amplituda.Compress
@@ -68,6 +69,13 @@ class WaveformViewModel @Inject constructor(
                 if (currentUri != audio.uri) return@launch
 
                 postFlatData(audio) // Show the ghost waveform immediately while we load the real one
+
+                // Streaming tracks have no local file to decode; show a plausible envelope instead
+                // of downloading the whole lossless file a second time just for the seek bar.
+                if (RemoteIds.isRemoteUri(audio.uri)) {
+                    waveformData.postValue(getRandomGhostData(audio.duration))
+                    return@launch
+                }
 
                 val dao = AudioDatabase.getInstance(getApplication()).waveformDao()
 
