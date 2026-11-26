@@ -12,7 +12,9 @@ import app.simple.felicity.preferences.SAFPreferences
 import app.simple.felicity.remote.FlacTagWriter
 import app.simple.felicity.remote.RemoteTrack
 import app.simple.felicity.remote.WebApiClient
+import app.simple.felicity.repository.repositories.LrcRepository
 import app.simple.felicity.repository.services.AudioDatabaseService
+import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -37,6 +39,8 @@ sealed interface DownloadResult {
  */
 class RemoteDownloader(private val context: Context, private val api: WebApiClient) {
 
+    private val gson = Gson()
+
     fun targetFolder(): DocumentFile? {
         val candidates = listOfNotNull(RemoteServerPreferences.getDownloadTreeUri()) + SAFPreferences.getTreeUris()
         return candidates.asSequence()
@@ -50,7 +54,10 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
 
         val partDir = File(context.cacheDir, "dl_parts").apply { mkdirs() }
         pruneStaleParts(partDir)
-        val partFile = File(partDir, "${sha256Prefix(track.id)}.part")
+        val key = sha256Prefix(track.id)
+        val partFile = File(partDir, "$key.part")
+        val metaFile = File(partDir, "$key.meta.json")
+        runCatching { metaFile.writeText(gson.toJson(track)) }
         var resolvedName = "${track.artist} - ${track.title}.${RemoteAudioMapper.extensionFor(track)}"
         var resolvedMime = RemoteAudioMapper.mimeFor(track)
 
@@ -67,6 +74,7 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
 
                         folder.findFile(info.filename)?.takeIf { it.isFile && it.length() > 0 }?.let {
                             partFile.delete()
+                            metaFile.delete()
                             return@download DownloadResult.AlreadyExists(info.filename)
                         }
 
@@ -99,6 +107,7 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
                 delay(1_200L * attempt)
             }
 
+            val cachedLyrics = runCatching { LrcRepository(context).loadLrcFromFile(api.streamUrl(track.id)).getOrNull() }.getOrNull()
             if (resolvedMime.contains("flac", ignoreCase = true) || resolvedName.endsWith(".flac", ignoreCase = true)) {
                 val cover = track.coverUrl?.let { api.fetchSmallAsset(it) }
                 withContext(Dispatchers.IO) {
@@ -108,6 +117,7 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
                                 track = track,
                                 coverBytes = cover?.second,
                                 coverMime = cover?.first ?: "image/jpeg",
+                                lyricsText = cachedLyrics,
                         )
                     }
                 }
@@ -126,6 +136,7 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
                 throw e
             }
             partFile.delete()
+            metaFile.delete()
             onProgress(1f)
             notifyLibrary(file.uri)
             DownloadResult.Saved(file.name ?: resolvedName, folder.name ?: "Music")
@@ -133,6 +144,20 @@ class RemoteDownloader(private val context: Context, private val api: WebApiClie
             throw e
         } catch (e: Exception) {
             DownloadResult.Failed(e.message ?: "Download failed")
+        }
+    }
+
+    /** Returns tracks with partial downloads left on disk from interrupted sessions. */
+    fun pendingResumableDownloads(): List<RemoteTrack> {
+        val partDir = File(context.cacheDir, "dl_parts").takeIf { it.isDirectory } ?: return emptyList()
+        pruneStaleParts(partDir)
+        return partDir.listFiles { f -> f.name.endsWith(".meta.json") }.orEmpty().mapNotNull { meta ->
+            val part = File(partDir, meta.name.removeSuffix(".meta.json") + ".part")
+            if (!part.isFile || part.length() <= 0L) {
+                meta.delete()
+                return@mapNotNull null
+            }
+            runCatching { gson.fromJson(meta.readText(), RemoteTrack::class.java) }.getOrNull()
         }
     }
 

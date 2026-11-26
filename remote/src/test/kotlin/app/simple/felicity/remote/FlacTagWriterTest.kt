@@ -38,4 +38,39 @@ class FlacTagWriterTest {
         assertTrue(text.contains("image/jpeg"))
         assertArrayEquals(fakeAudio, out.copyOfRange(out.size - fakeAudio.size, out.size))
     }
+
+    @Test
+    fun mergesPartialVorbisCommentsAndLyricsWithoutDroppingExistingTags() {
+        val fakeAudio = byteArrayOf(0xFF.toByte(), 0xF8.toByte(), 0x55, 0x66)
+        val existingComment = ByteArrayOutputStream().apply {
+            fun leInt(v: Int) = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(v).array()
+            val vendor = "vendor".toByteArray(Charsets.UTF_8)
+            val tags = listOf("TITLE=Custom Title", "CUSTOM=keep-me")
+            write(leInt(vendor.size)); write(vendor)
+            write(leInt(tags.size))
+            tags.forEach { t -> val b = t.toByteArray(Charsets.UTF_8); write(leInt(b.size)); write(b) }
+        }.toByteArray()
+
+        val rawFlac = ByteArrayOutputStream().apply {
+            write("fLaC".toByteArray(Charsets.US_ASCII))
+            write(0x00); write(0); write(0); write(34); write(ByteArray(34) { 0x01 })
+            write(0x84)
+            write((existingComment.size ushr 16) and 0xff)
+            write((existingComment.size ushr 8) and 0xff)
+            write(existingComment.size and 0xff)
+            write(existingComment)
+            write(fakeAudio)
+        }.toByteArray()
+
+        val file = tmp.newFile("partial.flac").apply { writeBytes(rawFlac) }
+        val track = RemoteTrack(id = "hifi:2", provider = "hifi", title = "Ignored", artist = "Harnoor", album = "Single")
+        assertTrue(FlacTagWriter.embedIfMissing(file, track, lyricsText = "[00:01.00] Line one"))
+
+        val text = file.readBytes().toString(Charsets.UTF_8)
+        assertTrue(text.contains("TITLE=Custom Title"))
+        assertTrue(text.contains("CUSTOM=keep-me"))
+        assertTrue(text.contains("ARTIST=Harnoor"))
+        assertTrue(text.contains("ALBUM=Single"))
+        assertTrue(text.contains("LYRICS=[00:01.00] Line one"))
+    }
 }

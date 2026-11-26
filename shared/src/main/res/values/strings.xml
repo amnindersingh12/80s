@@ -665,4 +665,7 @@
     <string name="remote_clear_history">Clear history</string>
     <string name="remote_shuffle_play">Shuffle all</string>
     <string name="remote_add_to_playlist">Add to playlist</string>
+    <string name="remote_pending_downloads">Paused downloads</string>
+    <string name="remote_resume_all">Resume all</string>
+    <string name="remote_suggestions">Suggestions</string>
 </resources>

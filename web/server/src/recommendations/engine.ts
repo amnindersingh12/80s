@@ -48,6 +48,8 @@ export interface EngineDeps {
   matchConcurrency: number;
   /** Cap uncached provider searches during `recommend()` (default unlimited for tests; 3 in prod). */
   maxMatchLookups?: number;
+  /** Optional artwork resolver for artists/tracks lacking covers when Last.fm is disabled. */
+  artworkLookup?: (query: string) => Promise<string | undefined>;
   log?: (msg: string, err?: unknown) => void;
 }
 
@@ -141,12 +143,12 @@ export class RecommendationEngine {
       const q = resolved.type === "tag" ? (expandTag(resolved.tag as string)[0] ?? resolved.tag!) : (resolved.artist ?? resolved.label);
       const seen = new Set(finalTracks.map((t) => t.key));
       const backfill = await this.deps.chain.search(q, { limit }).catch(() => null);
+      const extras: typeof finalTracks = [];
       for (const t of backfill?.tracks ?? []) {
-        if (finalTracks.length >= limit) break;
         const k = trackKey(t.artist, t.title);
         if (seen.has(k) || k === seedKey) continue;
         seen.add(k);
-        finalTracks.push({
+        extras.push({
           key: k,
           title: t.title,
           artist: t.artist,
@@ -160,22 +162,57 @@ export class RecommendationEngine {
           track: t,
         });
       }
+      if (extras.length > 0) {
+        const playable = finalTracks.filter((t) => t.availability === "playable");
+        const metaOnly = finalTracks.filter((t) => t.availability !== "playable");
+        finalTracks.length = 0;
+        finalTracks.push(...[...playable, ...extras, ...metaOnly].slice(0, limit));
+      }
     }
-    if (similarArtists.length < 6 && finalTracks.length > 0) {
-      const seenArtists = new Set(similarArtists.map((a) => normalizeText(a.name)));
+
+    const trackCoverByArtist = new Map<string, string>();
+    for (const t of finalTracks) {
+      if (!t.coverUrl) continue;
+      const primary = normalizeText(splitArtists(t.artist)[0] ?? t.artist);
+      if (primary && !trackCoverByArtist.has(primary)) trackCoverByArtist.set(primary, t.coverUrl);
+    }
+    let finalArtists =
+      this.deps.maxMatchLookups !== undefined
+        ? similarArtists.map((a) =>
+            a.imageUrl ? a : { ...a, ...(trackCoverByArtist.get(normalizeText(a.name)) ? { imageUrl: trackCoverByArtist.get(normalizeText(a.name)) } : {}) },
+          )
+        : [...similarArtists];
+    if (finalArtists.length < 6 && finalTracks.length > 0) {
+      const seenArtists = new Set(finalArtists.map((a) => normalizeText(a.name)));
       for (const t of finalTracks) {
-        if (similarArtists.length >= 12) break;
+        if (finalArtists.length >= 12) break;
         const primary = splitArtists(t.artist)[0] ?? t.artist;
         const ak = normalizeText(primary);
         if (!ak || seenArtists.has(ak) || (resolved.artist && artistSimilarity(primary, resolved.artist) >= 0.9)) continue;
         seenArtists.add(ak);
-        similarArtists.push({ name: primary, score: t.score * 0.5, sources: t.sources, playable: t.availability === "playable", ...(t.coverUrl ? { imageUrl: t.coverUrl } : {}) });
+        finalArtists.push({ name: primary, score: t.score * 0.5, sources: t.sources, playable: t.availability === "playable", ...(t.coverUrl ? { imageUrl: t.coverUrl } : {}) });
+      }
+    }
+    if (this.deps.maxMatchLookups !== undefined && this.deps.artworkLookup) {
+      const missingArtists = finalArtists.filter((a) => !a.imageUrl).slice(0, 4);
+      const artHits = await Promise.all(
+        missingArtists.map(async (a) => ({
+          key: normalizeText(a.name),
+          url: await this.lookupArtwork(a.name),
+        })),
+      );
+      const artByKey = new Map(artHits.filter((h) => h.url).map((h) => [h.key, h.url as string]));
+      if (artByKey.size > 0) {
+        finalArtists = finalArtists.map((a) => {
+          const hit = artByKey.get(normalizeText(a.name));
+          return a.imageUrl || !hit ? a : { ...a, imageUrl: hit };
+        });
       }
     }
 
     return {
       seed: { ...seed, ...pick(resolved), label: resolved.label },
-      similarArtists,
+      similarArtists: finalArtists,
       relatedTracks: finalTracks,
       tags: pool.tags,
       sources: pool.sources,
@@ -427,6 +464,17 @@ export class RecommendationEngine {
   private async artistPlayable(name: string): Promise<boolean> {
     const { tracks } = await this.deps.chain.search(name, { limit: 8 });
     return tracks.some((t) => artistSimilarity(t.artist, name) >= 0.85);
+  }
+
+  private async lookupArtwork(query: string): Promise<string | undefined> {
+    const lookup = this.deps.artworkLookup;
+    if (!lookup) return undefined;
+    const key = `artwork:v1:${normalizeText(query)}`;
+    const cached = await this.deps.cache.get<string | null>(key);
+    if (cached !== undefined) return cached ?? undefined;
+    const url = await lookup(query).catch(() => undefined);
+    await this.deps.cache.set(key, url ?? null, this.deps.cacheTtlMs);
+    return url;
   }
 }
 

@@ -135,12 +135,29 @@ export async function createServices(config: Config, overrides: ServiceOverrides
   const tracker = new PrepareTracker(chain, { now: overrides.now });
 
   const rc = config.recommendations;
+  const artworkLookup = async (query: string): Promise<string | undefined> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_500);
+    try {
+      const url = `https://itunes.apple.com/search?media=music&entity=song&limit=1&term=${encodeURIComponent(query)}`;
+      const res = await fetchFn(url, { signal: controller.signal });
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as { results?: Array<{ artworkUrl100?: string }> };
+      const raw = data.results?.[0]?.artworkUrl100;
+      return raw ? raw.replace(/\/\d+x\d+bb\./, "/600x600bb.") : undefined;
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const engine = new RecommendationEngine({
     chain,
     cache,
     cacheTtlMs: rc.cacheTtlMs,
     matchConcurrency: rc.matchConcurrency,
     maxMatchLookups: rc.maxMatchLookups,
+    artworkLookup,
     lastfm: rc.lastfm ? new LastfmClient({ ...rc.lastfm, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,
     listenbrainz: rc.listenbrainz ? new ListenBrainzClient({ ...rc.listenbrainz, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,
     musicbrainz: rc.musicbrainz ? new MusicBrainzClient({ ...rc.musicbrainz, timeoutMs: rc.timeoutMs, fetch: fetchFn }) : undefined,

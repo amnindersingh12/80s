@@ -492,5 +492,20 @@ class LrcRepository @Inject constructor(
             repo.deleteSibling(audioUri, "lrc")
             repo.deleteSibling(audioUri, "txt")
         }
+
+        /** Copies cached `stream_lrc` sidecars onto a newly downloaded local `content://` audio URI. */
+        fun migrateStreamLyricsStatic(context: Context, remoteStreamUri: String, localContentUri: String) {
+            val repo = LrcRepository(context)
+            repo.streamCacheFile(remoteStreamUri, "lrc")?.takeIf { it.isFile && it.length() > 0 }?.let { src ->
+                if (!repo.siblingExists(localContentUri, "lrc")) {
+                    repo.writeSibling(localContentUri, "lrc", src.readText(Charsets.UTF_8))
+                }
+            }
+            repo.streamCacheFile(remoteStreamUri, "txt")?.takeIf { it.isFile && it.length() > 0 }?.let { src ->
+                if (!repo.siblingExists(localContentUri, "txt")) {
+                    repo.writeSibling(localContentUri, "txt", src.readText(Charsets.UTF_8))
+                }
+            }
+        }
     }
 }

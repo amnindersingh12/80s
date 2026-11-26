@@ -11,7 +11,9 @@ import app.simple.felicity.repository.database.instances.AudioDatabase
 import app.simple.felicity.repository.loader.MediaStorePaths.buildMediaStorePathMap
 import app.simple.felicity.repository.metadata.MetaDataHelper.extractMetadata
 import app.simple.felicity.repository.models.Audio
+import app.simple.felicity.repository.models.PlaylistSongCrossRef
 import app.simple.felicity.repository.notifications.LoaderNotification
+import app.simple.felicity.repository.repositories.LrcRepository
 import app.simple.felicity.repository.scanners.AudioScanner
 import app.simple.felicity.repository.scanners.SAFFile
 import app.simple.felicity.shared.utils.ProcessUtils.checkNotMainThread
@@ -201,9 +203,14 @@ class AudioDatabaseLoader @Inject constructor(private val context: Context) {
             notification.setPhase(notificationGeneration, LoaderNotification.Phase.CHECKING)
 
             val pathToStoredId = HashMap<String, Long>()
+            val remoteByKey = HashMap<String, Audio>()
             allAudio.forEach { audio ->
                 indexedMap[audio.uri] = IndexedFile(audio.dateModified, audio.size, audio.id, audio.isFavorite, audio.isAlwaysSkip)
                 pathToStoredId[audio.uri] = audio.id
+                if (audio.uri.startsWith("http")) {
+                    val key = "${audio.artist?.trim()?.lowercase().orEmpty()}|${audio.title?.trim()?.lowercase().orEmpty()}"
+                    if (key != "|") remoteByKey[key] = audio
+                }
             }
 
             Log.d(TAG, "Indexing complete. Found ${indexedMap.size} existing entries in the database.")
@@ -235,6 +242,7 @@ class AudioDatabaseLoader @Inject constructor(private val context: Context) {
                                     insertBatch.clear()
                                     Log.d(TAG, "Inserting batch of ${batch.size} audio items")
                                     dao?.insertBatch(batch)
+                                    migrateRemotePlaylistsAndLyrics(batch, remoteByKey)
                                 }
                             }
                             is PendingWrite.Update -> {
@@ -252,6 +260,7 @@ class AudioDatabaseLoader @Inject constructor(private val context: Context) {
                     if (insertBatch.isNotEmpty()) {
                         Log.d(TAG, "Inserting final batch of ${insertBatch.size} audio items")
                         dao?.insertBatch(insertBatch)
+                        migrateRemotePlaylistsAndLyrics(insertBatch, remoteByKey)
                     }
                     if (updateBatch.isNotEmpty()) {
                         Log.d(TAG, "Updating final batch of ${updateBatch.size} audio items")
@@ -299,6 +308,8 @@ class AudioDatabaseLoader @Inject constructor(private val context: Context) {
                                 Log.d(TAG, "Updating existing entry (id=$storedId) for: ${safFile.name}")
                                 PendingWrite.Update(audio, uriKey, newIndexEntry)
                             } else {
+                                val remoteKey = "${audio.artist?.trim()?.lowercase().orEmpty()}|${audio.title?.trim()?.lowercase().orEmpty()}"
+                                if (remoteByKey[remoteKey]?.isFavorite == true) audio.isFavorite = true
                                 PendingWrite.Insert(audio, uriKey, newIndexEntry)
                             }
 
@@ -371,6 +382,22 @@ class AudioDatabaseLoader @Inject constructor(private val context: Context) {
             }
             if (owned) {
                 isScanRunning.set(false)
+            }
+        }
+    }
+
+    private suspend fun migrateRemotePlaylistsAndLyrics(inserted: List<Audio>, remoteByKey: Map<String, Audio>) {
+        if (remoteByKey.isEmpty() || inserted.isEmpty()) return
+        val playlistDao = audioDatabase.playlistDao()
+        inserted.forEach { local ->
+            val key = "${local.artist?.trim()?.lowercase().orEmpty()}|${local.title?.trim()?.lowercase().orEmpty()}"
+            val remote = remoteByKey[key] ?: return@forEach
+            runCatching {
+                val refs = playlistDao.getCrossRefsForAudioHash(remote.hash)
+                if (refs.isNotEmpty()) {
+                    playlistDao.addSongsToPlaylist(refs.map { PlaylistSongCrossRef(it.playlistId, local.hash, it.position) })
+                }
+                LrcRepository.migrateStreamLyricsStatic(context, remote.uri, local.uri)
             }
         }
     }

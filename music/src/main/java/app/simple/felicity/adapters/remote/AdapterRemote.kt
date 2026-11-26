@@ -120,11 +120,16 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) :
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
-        if (payloads.contains(PAYLOAD_TRACK_STATE) && holder is TrackHolder) {
-            val item = getItem(position) as? RemoteItem.Track
-            if (item != null) {
-                holder.bindPlaybackAndDownloadState(item)
-                return
+        if (payloads.contains(PAYLOAD_TRACK_STATE)) {
+            when (holder) {
+                is TrackHolder -> (getItem(position) as? RemoteItem.Track)?.let {
+                    holder.bindPlaybackAndDownloadState(it)
+                    return
+                }
+                is HeroHolder -> (getItem(position) as? RemoteItem.Hero)?.let {
+                    holder.bindDownloadState(it.item)
+                    return
+                }
             }
         }
         super.onBindViewHolder(holder, position, payloads)
@@ -161,7 +166,10 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) :
                 binding.heroCover.setImageResource(R.drawable.ic_song)
             }
             ArtworkColorHelper.tintFromUrl(context, t.coverUrl ?: t.track?.coverUrl, binding.heroContainer, 0.42f)
+            bindDownloadState(t)
+        }
 
+        fun bindDownloadState(t: RemoteItem.Track) {
             val playClick = {
                 val track = t.track
                 if (track != null) callbacks.onPlay(track) else callbacks.onPlayMetadata(t.title, t.artist, t.album)
@@ -372,6 +380,14 @@ class AdapterRemote(private val callbacks: RemoteTrackCallbacks) :
             }
 
             override fun getChangePayload(oldItem: RemoteItem, newItem: RemoteItem): Any? {
+                if (oldItem is RemoteItem.Hero && newItem is RemoteItem.Hero &&
+                        oldItem.badge == newItem.badge &&
+                        oldItem.item.title == newItem.item.title &&
+                        oldItem.item.artist == newItem.item.artist &&
+                        oldItem.item.coverUrl == newItem.item.coverUrl &&
+                        oldItem.item.track?.id == newItem.item.track?.id) {
+                    return PAYLOAD_TRACK_STATE
+                }
                 if (oldItem is RemoteItem.Track && newItem is RemoteItem.Track &&
                         oldItem.title == newItem.title &&
                         oldItem.artist == newItem.artist &&

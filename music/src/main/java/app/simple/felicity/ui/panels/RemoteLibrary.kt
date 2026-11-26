@@ -118,6 +118,7 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
                             remote.downloads,
                             viewModel.localKeys,
                             viewModel.searchHistory,
+                            remote.pendingResumable,
                     ) { arr ->
                         arr[0] as RemoteTab
                     }.collect { tab ->
@@ -265,27 +266,61 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
 
     private fun searchItems(): List<RemoteItem> = when (val s = viewModel.search.value) {
         Loadable.Idle -> {
+            val items = mutableListOf<RemoteItem>()
+            val pending = remote.pendingResumable.value
+            if (pending.isNotEmpty()) {
+                items += RemoteItem.Section(
+                        getString(R.string.remote_pending_downloads),
+                        actionText = getString(R.string.remote_resume_all),
+                ) { remote.resumePendingDownloads() }
+                items += pending.map { trackItem(it) }
+            }
             val history = viewModel.searchHistory.value
-            if (history.isEmpty()) {
-                listOf(RemoteItem.Message(getString(R.string.remote_search_empty)))
+            if (history.isNotEmpty()) {
+                items += RemoteItem.Section(
+                        getString(R.string.remote_recent_searches),
+                        actionText = getString(R.string.remote_clear_history),
+                ) { viewModel.clearSearchHistory() }
+                items += RemoteItem.Chips(
+                        history.map { q ->
+                            RemoteItem.Chip(q, q) {
+                                binding.searchInput.setText(q)
+                                binding.searchInput.setSelection(q.length)
+                            }
+                        },
+                )
+            }
+            items += RemoteItem.Section(getString(R.string.remote_suggestions))
+            items += RemoteItem.Chips(
+                    SEARCH_SUGGESTIONS.map { q ->
+                        RemoteItem.Chip(q, q) {
+                            binding.searchInput.setText(q)
+                            binding.searchInput.setSelection(q.length)
+                        }
+                    },
+            )
+            items
+        }
+        Loadable.Loading -> {
+            val q = viewModel.currentQuery()
+            val matches = SEARCH_SUGGESTIONS.filter { it.contains(q, ignoreCase = true) }
+            if (matches.isEmpty()) {
+                listOf(RemoteItem.Message(loadingText()))
             } else {
                 listOf(
-                        RemoteItem.Section(
-                                getString(R.string.remote_recent_searches),
-                                actionText = getString(R.string.remote_clear_history),
-                        ) { viewModel.clearSearchHistory() },
+                        RemoteItem.Message(loadingText()),
+                        RemoteItem.Section(getString(R.string.remote_suggestions)),
                         RemoteItem.Chips(
-                                history.map { q ->
-                                    RemoteItem.Chip(q, q) {
-                                        binding.searchInput.setText(q)
-                                        binding.searchInput.setSelection(q.length)
+                                matches.map { sQuery ->
+                                    RemoteItem.Chip(sQuery, sQuery) {
+                                        binding.searchInput.setText(sQuery)
+                                        binding.searchInput.setSelection(sQuery.length)
                                     }
                                 },
                         ),
                 )
             }
         }
-        Loadable.Loading -> listOf(RemoteItem.Message(loadingText()))
         is Loadable.Failed -> listOf(failure(s) { viewModel.retrySearch() })
         is Loadable.Loaded -> searchResults(s.value)
     }
@@ -301,6 +336,14 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
     private fun discoverItems(): List<RemoteItem> {
         val seed = viewModel.seed.value
         val items = mutableListOf<RemoteItem>()
+        val pending = remote.pendingResumable.value
+        if (pending.isNotEmpty()) {
+            items += RemoteItem.Section(
+                    getString(R.string.remote_pending_downloads),
+                    actionText = getString(R.string.remote_resume_all),
+            ) { remote.resumePendingDownloads() }
+            items += pending.map { trackItem(it) }
+        }
         items += RemoteItem.Section(getString(R.string.remote_genres), actionText = getString(R.string.remote_follow_now_playing)) {
             if (!viewModel.followNowPlaying()) showWarning(R.string.remote_nothing_playing)
         }
@@ -472,5 +515,18 @@ class RemoteLibrary : PanelFragment(), RemoteTrackCallbacks {
         fun newInstance(): RemoteLibrary = RemoteLibrary()
 
         const val TAG = "RemoteLibrary"
+
+        private val SEARCH_SUGGESTIONS = listOf(
+                "AP Dhillon",
+                "Harnoor",
+                "Diljit Dosanjh",
+                "Karan Aujla",
+                "Sidhu Moose Wala",
+                "Shubh",
+                "Punjabi Pop",
+                "Bollywood",
+                "Synthwave",
+                "Indie",
+        )
     }
 }

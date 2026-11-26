@@ -72,6 +72,9 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
     private val _downloads = MutableStateFlow<Map<String, DownloadState>>(emptyMap())
     val downloads: StateFlow<Map<String, DownloadState>> = _downloads.asStateFlow()
 
+    private val _pendingResumable = MutableStateFlow<List<RemoteTrack>>(emptyList())
+    val pendingResumable: StateFlow<List<RemoteTrack>> = _pendingResumable.asStateFlow()
+
     private val _radio = MutableStateFlow<RadioSession?>(null)
     val radio: StateFlow<RadioSession?> = _radio.asStateFlow()
 
@@ -81,6 +84,18 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
     private var prepareJob: Job? = null
     private var radioWatcher: Job? = null
     private val prewarmed = LinkedHashSet<String>()
+
+    init {
+        scope.launch(Dispatchers.IO) {
+            val pending = downloader.pendingResumableDownloads()
+            _pendingResumable.value = pending
+            if (pending.isNotEmpty()) {
+                _downloads.update { existing ->
+                    existing + pending.filter { !existing.containsKey(it.id) }.associate { it.id to DownloadState(null, error = "Paused — tap to resume") }
+                }
+            }
+        }
+    }
 
     fun config(): ServerConfig? = RemoteServerPreferences.getServerConfig(context)
 
@@ -218,17 +233,21 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
 
     /** Queues [track] right after the current song; the stream is warmed up in the background. */
     fun playNext(track: RemoteTrack) {
-        MediaPlaybackManager.playNext(toAudio(track))
-        prewarm(track)
-        _events.tryEmit(RemoteEvent.Message("“${track.title}” plays next"))
+        scope.launch {
+            MediaPlaybackManager.playNext(toHydratedAudio(track))
+            prewarm(track)
+            _events.tryEmit(RemoteEvent.Message("“${track.title}” plays next"))
+        }
     }
 
     fun enqueue(tracks: List<RemoteTrack>, announce: Boolean = true) {
         if (tracks.isEmpty()) return
-        tracks.forEach { MediaPlaybackManager.addToQueue(toAudio(it)) }
-        tracks.take(2).forEach(::prewarm)
-        if (announce) {
-            _events.tryEmit(RemoteEvent.Message(if (tracks.size == 1) "Added “${tracks[0].title}” to the queue" else "Added ${tracks.size} tracks to the queue"))
+        scope.launch {
+            tracks.forEach { MediaPlaybackManager.addToQueue(toHydratedAudio(it)) }
+            tracks.take(2).forEach(::prewarm)
+            if (announce) {
+                _events.tryEmit(RemoteEvent.Message(if (tracks.size == 1) "Added “${tracks[0].title}” to the queue" else "Added ${tracks.size} tracks to the queue"))
+            }
         }
     }
 
@@ -237,8 +256,12 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
         val list = if (shuffle) tracks.shuffled() else tracks
         val first = list.firstOrNull() ?: return
         val rest = list.drop(1)
+        rest.firstOrNull()?.let(::prewarm)
         play(first) {
-            if (rest.isNotEmpty()) enqueue(rest, announce = false)
+            if (rest.isNotEmpty()) {
+                enqueue(rest, announce = false)
+                prewarmUpcoming()
+            }
         }
         _events.tryEmit(RemoteEvent.Message(if (shuffle) "Shuffling ${list.size} lossless tracks" else "Playing ${list.size} lossless tracks"))
     }
@@ -270,7 +293,7 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
                     _events.tryEmit(RemoteEvent.Error(ready.exceptionOrNull()?.message ?: "Couldn't start radio"))
                     return@launch
                 }
-                MediaPlaybackManager.insertAndPlay(toAudio(startWith))
+                MediaPlaybackManager.insertAndPlay(toHydratedAudio(startWith))
             }
             val batch = fetchRadio(seed) ?: run { _radio.value = null; return@launch }
             if (batch.tracks.isEmpty()) {
@@ -361,7 +384,14 @@ class RemoteMusicRepository @Inject constructor(@ApplicationContext private val 
                     _events.tryEmit(if (result.needsFolder) RemoteEvent.NeedsMusicFolder else RemoteEvent.Error("Download failed: ${result.message}"))
                 }
             }
+            withContext(Dispatchers.IO) {
+                _pendingResumable.value = downloader.pendingResumableDownloads()
+            }
         }
+    }
+
+    fun resumePendingDownloads() {
+        _pendingResumable.value.forEach(::download)
     }
 
     // ------------------------------------------------------------ helpers ---

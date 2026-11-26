@@ -26,6 +26,7 @@ object FlacTagWriter {
         track: RemoteTrack,
         coverBytes: ByteArray? = null,
         coverMime: String = "image/jpeg",
+        lyricsText: String? = null,
     ): Boolean {
         if (!file.isFile || file.length() < 42) return false
         RandomAccessFile(file, "r").use { raf ->
@@ -34,7 +35,7 @@ object FlacTagWriter {
             if (String(magic, Charsets.US_ASCII) != "fLaC") return false
 
             val preserved = mutableListOf<Pair<Int, ByteArray>>()
-            var hasComments = false
+            var existingCommentsPayload: ByteArray? = null
             var hasPicture = false
             var isLast = false
             var audioOffset = 4L
@@ -57,10 +58,7 @@ object FlacTagWriter {
 
                 when (type) {
                     BLOCK_PADDING -> Unit // trim excess padding
-                    BLOCK_VORBIS_COMMENT -> {
-                        hasComments = true
-                        preserved += type to payload
-                    }
+                    BLOCK_VORBIS_COMMENT -> existingCommentsPayload = payload
                     BLOCK_PICTURE -> {
                         hasPicture = true
                         preserved += type to payload
@@ -70,11 +68,16 @@ object FlacTagWriter {
             }
 
             if (preserved.none { it.first == BLOCK_STREAMINFO }) return false
-            val needComments = !hasComments
-            val needPicture = !hasPicture && coverBytes != null && coverBytes.isNotEmpty()
-            if (!needComments && !needPicture) return false
 
-            if (needComments) preserved += BLOCK_VORBIS_COMMENT to buildVorbisComment(track)
+            val (vendor, mergedComments, commentsChanged) = mergeVorbisComments(existingCommentsPayload, track, lyricsText)
+            val needPicture = !hasPicture && coverBytes != null && coverBytes.isNotEmpty()
+            if (!commentsChanged && !needPicture) return false
+
+            if (commentsChanged) {
+                preserved += BLOCK_VORBIS_COMMENT to encodeVorbisComment(vendor, mergedComments)
+            } else if (existingCommentsPayload != null) {
+                preserved += BLOCK_VORBIS_COMMENT to existingCommentsPayload
+            }
             if (needPicture) preserved += BLOCK_PICTURE to buildPictureBlock(coverBytes, coverMime)
 
             val tmp = File(file.parentFile, "${file.name}.tagtmp")
@@ -109,19 +112,57 @@ object FlacTagWriter {
         }
     }
 
-    private fun buildVorbisComment(track: RemoteTrack): ByteArray {
-        val comments = buildList {
-            add("TITLE=${track.title}")
-            add("ARTIST=${track.artist}")
-            track.album?.takeIf { it.isNotBlank() }?.let { add("ALBUM=$it") }
-            add("ALBUMARTIST=${track.artist}")
-            track.year?.let { add("DATE=$it") }
-            track.trackNumber?.let { add("TRACKNUMBER=$it") }
+    private fun mergeVorbisComments(
+        existing: ByteArray?,
+        track: RemoteTrack,
+        lyricsText: String?,
+    ): Triple<String, List<String>, Boolean> {
+        var vendor = "80s-felicity"
+        val entries = mutableListOf<String>()
+        if (existing != null && existing.size >= 8) {
+            runCatching {
+                val bb = ByteBuffer.wrap(existing).order(ByteOrder.LITTLE_ENDIAN)
+                val vLen = bb.getInt()
+                if (vLen >= 0 && vLen <= bb.remaining()) {
+                    val vBytes = ByteArray(vLen)
+                    bb.get(vBytes)
+                    vendor = String(vBytes, Charsets.UTF_8)
+                    val count = bb.getInt()
+                    for (i in 0 until count.coerceIn(0, 1024)) {
+                        if (bb.remaining() < 4) break
+                        val len = bb.getInt()
+                        if (len < 0 || len > bb.remaining()) break
+                        val cBytes = ByteArray(len)
+                        bb.get(cBytes)
+                        entries += String(cBytes, Charsets.UTF_8)
+                    }
+                }
+            }
         }
+        val existingKeys = entries.map { it.substringBefore('=').uppercase() }.toMutableSet()
+        var changed = existing == null
+        fun putIfMissing(key: String, value: String?) {
+            val v = value?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            if (existingKeys.add(key.uppercase())) {
+                entries += "$key=$v"
+                changed = true
+            }
+        }
+        putIfMissing("TITLE", track.title)
+        putIfMissing("ARTIST", track.artist)
+        putIfMissing("ALBUM", track.album)
+        putIfMissing("ALBUMARTIST", track.artist)
+        putIfMissing("DATE", track.year?.toString())
+        putIfMissing("TRACKNUMBER", track.trackNumber?.toString())
+        putIfMissing("LYRICS", lyricsText)
+        return Triple(vendor, entries, changed)
+    }
+
+    private fun encodeVorbisComment(vendor: String, comments: List<String>): ByteArray {
         val out = ByteArrayOutputStream()
-        val vendor = "80s-felicity".toByteArray(Charsets.UTF_8)
-        out.writeLeInt(vendor.size)
-        out.write(vendor)
+        val vendorBytes = vendor.toByteArray(Charsets.UTF_8)
+        out.writeLeInt(vendorBytes.size)
+        out.write(vendorBytes)
         out.writeLeInt(comments.size)
         for (c in comments) {
             val bytes = c.toByteArray(Charsets.UTF_8)

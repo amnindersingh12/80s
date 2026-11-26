@@ -1,5 +1,4 @@
 import { Readable } from "node:stream";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../errors.js";
 import type { FetchFn } from "../lib/http.js";
@@ -143,9 +142,41 @@ export async function proxyAudio(
     reply.raw.off("close", onClose);
     return reply.send();
   }
-  const body = Readable.fromWeb(res.body as unknown as WebReadableStream<Uint8Array>);
+
+  // Peek first chunk on start-of-file streams to block masked lossy payloads (e.g. MP3 sent as audio/flac).
+  const reader = res.body.getReader();
+  const firstRead = await reader.read().catch(() => ({ done: true as const, value: undefined }));
+  const firstChunk = firstRead.value;
+  if (firstChunk && (!rangeHeader || rangeHeader.startsWith("bytes=0-"))) {
+    const magicCheck = verifyLosslessStream(upstreamType, firstChunk);
+    if (!magicCheck.ok) {
+      await reader.cancel().catch(() => undefined);
+      reply.raw.off("close", onClose);
+      throw new AppError("STREAM_UNAVAILABLE", magicCheck.reason ?? "Only lossless FLAC/ALAC streams are supported", {
+        provider: resolved.servedBy.name,
+      });
+    }
+  }
+
+  async function* chunkStream() {
+    if (firstChunk) yield firstChunk;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) yield value;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  const body = Readable.from(chunkStream());
   // If the browser hangs up mid-transfer, stop pulling bytes from the CDN.
-  clientGone.signal.addEventListener("abort", () => body.destroy(), { once: true });
+  clientGone.signal.addEventListener("abort", () => {
+    reader.cancel().catch(() => undefined);
+    body.destroy();
+  }, { once: true });
   body.on("error", () => undefined);
   body.once("close", () => reply.raw.off("close", onClose));
   return reply.send(body);

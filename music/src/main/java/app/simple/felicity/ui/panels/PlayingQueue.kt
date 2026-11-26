@@ -17,12 +17,16 @@ import app.simple.felicity.decorations.popups.SharedScrollViewPopup
 import app.simple.felicity.decorations.views.AppHeader
 import app.simple.felicity.dialogs.app.TotalTime.Companion.showTotalTime
 import app.simple.felicity.dialogs.playlists.AddMultipleToPlaylistDialog.Companion.showAddMultipleToPlaylistDialog
+import app.simple.felicity.dialogs.playlists.AddToPlaylistDialog.Companion.showAddToPlaylistDialog
 import app.simple.felicity.dialogs.queue.QueueLabel.Companion.QueueLabelCallbacks
 import app.simple.felicity.dialogs.queue.QueueLabel.Companion.openQueueLabel
 import app.simple.felicity.engine.managers.MediaPlaybackManager
 import app.simple.felicity.engine.managers.PlaybackStateManager
 import app.simple.felicity.extensions.fragments.BasePanelFragment
 import app.simple.felicity.preferences.QueueLabelPreferences
+import app.simple.felicity.remote.RecommendationSeed
+import app.simple.felicity.remote.RemoteCatalog
+import app.simple.felicity.remote.RemoteIds
 import app.simple.felicity.repository.managers.SelectionManager
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.shared.utils.TimeUtils.toDynamicTimeString
@@ -192,6 +196,37 @@ class PlayingQueue : BasePanelFragment() {
                 }
 
                 override fun onSongLongClicked(audios: MutableList<Audio>, position: Int, imageView: ImageView?) {
+                    val audio = audios.getOrNull(position)
+                    val remoteTrack = audio?.let { RemoteCatalog.get(it.id) }
+                    val remoteRepo = (requireActivity() as? app.simple.felicity.activities.MainActivity)?.remoteMusicRepository
+                    if (audio != null && (remoteTrack != null || RemoteIds.isRemoteUri(audio.uri)) && remoteRepo != null) {
+                        val anchor = imageView ?: binding.recyclerView
+                        hideMiniPlayer()
+                        SharedScrollViewPopup(
+                                container = requireContainerView(),
+                                anchorView = anchor,
+                                menuItems = listOf(
+                                        PopupMenuItem(title = R.string.remote_play_now, icon = R.drawable.ic_play),
+                                        PopupMenuItem(title = R.string.remote_start_track_radio, icon = R.drawable.ic_radio),
+                                        PopupMenuItem(title = R.string.add_to_playlist, icon = R.drawable.ic_add_to_playlist),
+                                        PopupMenuItem(title = R.string.delete, icon = R.drawable.ic_delete),
+                                ),
+                                onMenuItemClick = { id ->
+                                    when (id) {
+                                        R.string.remote_play_now -> MediaPlaybackManager.updatePosition(position, forcePlay = true)
+                                        R.string.remote_start_track_radio -> {
+                                            val seed = remoteTrack?.let { RecommendationSeed.track(it) }
+                                                ?: RecommendationSeed.track(audio.artist.orEmpty(), audio.title.orEmpty())
+                                            remoteRepo.startRadio(seed, "${audio.artist} – ${audio.title}")
+                                        }
+                                        R.string.add_to_playlist -> parentFragmentManager.showAddToPlaylistDialog(audio)
+                                        R.string.delete -> MediaPlaybackManager.removeQueueItemSilently(position)
+                                    }
+                                },
+                                onDismiss = { showMiniPlayer() },
+                        ).show()
+                        return
+                    }
                     openSongsMenu(audios, position, imageView)
                 }
             })

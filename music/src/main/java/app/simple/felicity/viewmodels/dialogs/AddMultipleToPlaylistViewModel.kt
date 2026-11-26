@@ -2,7 +2,10 @@ package app.simple.felicity.viewmodels.dialogs
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.simple.felicity.engine.managers.MediaPlaybackManager
+import app.simple.felicity.repository.managers.SelectionManager
 import app.simple.felicity.repository.models.Playlist
+import app.simple.felicity.repository.repositories.AudioRepository
 import app.simple.felicity.repository.repositories.PlaylistRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
@@ -30,7 +33,8 @@ import kotlinx.coroutines.launch
 @HiltViewModel(assistedFactory = AddMultipleToPlaylistViewModel.Factory::class)
 class AddMultipleToPlaylistViewModel @AssistedInject constructor(
         @Assisted val audioHashes: LongArray,
-        private val playlistRepository: PlaylistRepository
+        private val playlistRepository: PlaylistRepository,
+        private val audioRepository: AudioRepository,
 ) : ViewModel() {
 
     /**
@@ -87,6 +91,14 @@ class AddMultipleToPlaylistViewModel @AssistedInject constructor(
     fun saveToPlaylists(checkedPlaylistIds: Set<Long>) {
         viewModelScope.launch(Dispatchers.IO) {
             val hashes = audioHashes.toList()
+            val hashSet = hashes.toHashSet()
+            if (checkedPlaylistIds.isNotEmpty()) {
+                val candidates = MediaPlaybackManager.getSongs() + SelectionManager.selectedAudios.value
+                candidates
+                    .filter { it.hash in hashSet && (it.id < 0 || it.uri.startsWith("http")) }
+                    .distinctBy { it.hash }
+                    .forEach { audioRepository.ensureRemoteTrackStored(it) }
+            }
             checkedPlaylistIds.forEach { playlistId ->
                 playlistRepository.addSongs(playlistId, hashes)
             }
