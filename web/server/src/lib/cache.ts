@@ -125,8 +125,15 @@ export async function createCache(options: {
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
     connectTimeout: 5_000,
+    ...(options.redisUrl.startsWith("rediss://") ? { tls: { rejectUnauthorized: false } } : {}),
   });
   client.on("error", (err) => options.onError?.(err));
-  await client.connect();
-  return new RedisCache(client as unknown as RedisLike, options.prefix, options.onError);
+  try {
+    await client.connect();
+    return new RedisCache(client as unknown as RedisLike, options.prefix, options.onError);
+  } catch (err) {
+    options.onError?.(err);
+    client.disconnect();
+    return new MemoryCache(options.maxEntries);
+  }
 }
