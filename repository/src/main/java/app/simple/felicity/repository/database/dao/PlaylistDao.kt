@@ -146,6 +146,9 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlist_song_cross_ref WHERE playlist_id = :playlistId ORDER BY position ASC")
     fun getCrossRefsByPlaylistId(playlistId: Long): Flow<List<PlaylistSongCrossRef>>
 
+    @Query("SELECT * FROM playlist_song_cross_ref WHERE audio_hash = :audioHash")
+    suspend fun getCrossRefsForAudioHash(audioHash: Long): List<PlaylistSongCrossRef>
+
     /**
      * Inserts a single [PlaylistSongCrossRef] row. If the song is already in the
      * playlist the row is replaced (idempotent).

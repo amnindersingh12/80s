@@ -1,9 +1,13 @@
 package app.simple.felicity.activities
 
 import android.app.SearchManager
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
@@ -99,10 +103,15 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
     @Inject
     lateinit var audioRepository: AudioRepository
 
+    @Inject
+    lateinit var remoteMusicRepository: app.simple.felicity.streaming.RemoteMusicRepository
+
     private var isFirstLaunch = true
 
     /** Ensures the DAC launch-pulse only runs once, on the first resume. */
     private var dacPulseDone = false
+
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
 
@@ -223,6 +232,27 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
                 when (state) {
                     MediaConstants.PLAYBACK_PLAYING -> binding.miniPlayer.setPlaying(true)
                     MediaConstants.PLAYBACK_PAUSED -> binding.miniPlayer.setPlaying(false)
+                    MediaConstants.PLAYBACK_BUFFERING -> {
+                        val current = MediaPlaybackManager.getCurrentSong()
+                        if (current != null && app.simple.felicity.remote.RemoteIds.isRemoteUri(current.uri)) {
+                            binding.miniPlayer.setPlaying(false)
+                        }
+                    }
+                }
+            }
+        }
+
+        lifecycleScope.launch {
+            remoteMusicRepository.prepare.collect { state ->
+                val remoteOpen = supportFragmentManager.findFragmentByTag(app.simple.felicity.ui.panels.RemoteLibrary.TAG) != null
+                when (state) {
+                    is app.simple.felicity.remote.PrepareState.Starting -> if (!remoteOpen) {
+                        android.widget.Toast.makeText(this@MainActivity, R.string.remote_preparing, android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    is app.simple.felicity.remote.PrepareState.Failed -> if (!remoteOpen) {
+                        android.widget.Toast.makeText(this@MainActivity, state.message, android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -385,6 +415,13 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
      *
      * @return a [BasePlayerFragment] subclass instance ready to be committed
      */
+    private fun hasInternetConnection(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private fun openPlayerForCurrentPreference(): BasePlayerFragment {
         return when (UserInterfacePreferences.getPlayerInterface()) {
             UserInterfacePreferences.PLAYER_INTERFACE_FADED -> PlayerFaded.newInstance()
@@ -394,6 +431,16 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
     }
 
     fun showHome() {
+        if (app.simple.felicity.preferences.RemoteServerPreferences.isOnlineMode()) {
+            if (hasInternetConnection()) {
+                supportFragmentManager.beginTransaction()
+                    .replace(R.id.fragment_container, app.simple.felicity.ui.panels.RemoteLibrary.newInstance(), app.simple.felicity.ui.panels.RemoteLibrary.TAG)
+                    .commit()
+                return
+            } else {
+                android.widget.Toast.makeText(this, R.string.remote_offline_fallback, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
         when (UserInterfacePreferences.getHomeInterface()) {
             UserInterfacePreferences.HOME_INTERFACE_DASHBOARD -> {
                 supportFragmentManager.beginTransaction()
@@ -733,11 +780,20 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
 
     override fun onStart() {
         super.onStart()
-        // Intentionally not starting the scan here — the scan is already kicked off
-        // from onCreate() via the permission observer, and running it again on every
-        // onStart() would re-trigger a full scan every time the user switches back to
-        // the app from any other screen. That is the exact behavior that was causing
-        // "why does the library refresh every time I resume?" — mystery solved!
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: Network) {
+                runOnUiThread {
+                    if (!hasInternetConnection() &&
+                            app.simple.felicity.preferences.RemoteServerPreferences.isOnlineMode() &&
+                            supportFragmentManager.findFragmentByTag(app.simple.felicity.ui.panels.RemoteLibrary.TAG)?.isVisible == true) {
+                        showHome()
+                    }
+                }
+            }
+        }
+        networkCallback = cb
+        runCatching { cm.registerDefaultNetworkCallback(cb) }
     }
 
     override fun onResume() {
@@ -766,6 +822,11 @@ class MainActivity : BaseActivity(), MiniPlayerCallbacks {
 
     override fun onStop() {
         super.onStop()
+        networkCallback?.let { cb ->
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            runCatching { cm?.unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
         savePlaybackState()
     }
 

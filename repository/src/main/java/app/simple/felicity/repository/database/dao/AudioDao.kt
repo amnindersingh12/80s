@@ -248,8 +248,9 @@ interface AudioDao {
     @Query("SELECT * FROM audio WHERE path = :posixPath LIMIT 1")
     fun getAudioByPosixPath(posixPath: String): Audio?
 
-    // Favorite / always-skip flag queries
-    @Query("SELECT * FROM audio WHERE is_favorite = 1 AND is_available = 1 ORDER BY title COLLATE NOCASE ASC")
+    // Favorite / always-skip flag queries (includes remote tracks for online-mode unification;
+    // FavoritesViewModel filters out http* entries cleanly when switched to Offline Mode).
+    @Query("SELECT * FROM audio WHERE is_favorite = 1 AND (is_available = 1 OR uri LIKE 'http%') ORDER BY title COLLATE NOCASE ASC")
     fun getFavoriteAudio(): Flow<MutableList<Audio>>
 
     /**

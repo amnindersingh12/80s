@@ -26,7 +26,9 @@ import app.simple.felicity.models.ArtFlowData
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.shared.utils.BarHeight
 import app.simple.felicity.theme.managers.ThemeManager
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.ui.panels.AlbumArtists
+import app.simple.felicity.ui.panels.RemoteLibrary
 import app.simple.felicity.ui.panels.Albums
 import app.simple.felicity.ui.panels.AlwaysSkipped
 import app.simple.felicity.ui.panels.Artists
@@ -127,9 +129,12 @@ class ArtFlowHome : MediaFragment() {
                                     PopupMenuItem(title = R.string.always_skipped, icon = R.drawable.ic_skip_next),
                                     PopupMenuItem(title = R.string.most_skipped, icon = R.drawable.ic_skip_next),
                                     PopupMenuItem(title = R.string.bookmarks, icon = R.drawable.ic_bookmark_16dp)
+                            ) + listOfNotNull(
+                                    if (RemoteServerPreferences.isConfigured()) PopupMenuItem(title = R.string.remote_stream, icon = R.drawable.ic_cloud) else null
                             ),
                             onMenuItemClick = { itemResId ->
                                 when (itemResId) {
+                                    R.string.remote_stream -> openFragment(RemoteLibrary.newInstance(), RemoteLibrary.TAG)
                                     R.string.album_artists -> openFragment(AlbumArtists.newInstance(), AlbumArtists.TAG)
                                     R.string.composers -> openFragment(Composers.newInstance(), Composers.TAG)
                                     R.string.genres -> openFragment(Genres.newInstance(), Genres.TAG)

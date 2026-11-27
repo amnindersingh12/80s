@@ -32,6 +32,7 @@ import app.simple.felicity.engine.managers.MediaPlaybackManager
 import app.simple.felicity.extensions.fragments.BaseHomeFragment
 import app.simple.felicity.preferences.MainPreferences
 import app.simple.felicity.preferences.QueueLabelPreferences
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.preferences.UserInterfacePreferences
 import app.simple.felicity.repository.models.Album
 import app.simple.felicity.repository.models.Artist
@@ -146,6 +147,7 @@ class Dashboard : BaseHomeFragment() {
         }
 
         setupServerToggle(binding.serverToggle)
+        setupOnlineOfflineToggle(binding.modeToggle.modeOnline, binding.modeToggle.modeOffline)
 
         // Watch the server state to show or hide the "Server Active" chip in the strip.
         viewLifecycleOwner.lifecycleScope.launch {
@@ -541,6 +543,7 @@ class Dashboard : BaseHomeFragment() {
             }
             // When any panel visibility preference changes, rebuild the browse grid so it
             // immediately reflects what the user just toggled — no restart required.
+            RemoteServerPreferences.SERVER_URL -> setupPanelsGrid()
             in UserInterfacePreferences.ALL_PANEL_VISIBILITY_KEYS -> {
                 setupPanelsGrid()
                 // Also re-evaluate the carousel sections that are tied to panel items.

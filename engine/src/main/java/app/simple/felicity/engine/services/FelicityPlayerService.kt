@@ -37,6 +37,9 @@ import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.session.CommandButton
+import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.session.CacheBitmapLoader
+import app.simple.felicity.engine.managers.RemoteDataSources
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
@@ -391,6 +394,16 @@ class FelicityPlayerService : MediaLibraryService(), SharedPreferences.OnSharedP
         mediaSession = MediaLibrarySession.Builder(this, playerManager.getSessionPlayer()!!, LibraryCallback())
             .setSessionActivity(sessionActivityIntent!!)
             .setId("ExoPlayerServiceSession")
+            // Same loader Media3 uses by default, but its data source adds the access-key header
+            // for artwork hosted on the user's web/ server (lock screen + notification).
+            .setBitmapLoader(
+                    CacheBitmapLoader(
+                            DataSourceBitmapLoader.Builder(this)
+                                .setDataSourceFactory(RemoteDataSources.factory(this))
+                                .setMaximumOutputDimension(1024)
+                                .build()
+                    )
+            )
             .build()
 
         // Set initial repeat button in the notification
@@ -933,6 +946,7 @@ class FelicityPlayerService : MediaLibraryService(), SharedPreferences.OnSharedP
     private val playerListener = object : Player.Listener {
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
             super.onAudioSessionIdChanged(audioSessionId)
+            MediaPlaybackManager.notifyAudioSessionId(audioSessionId)
             Log.d(TAG, "Audio session ID changed: $audioSessionId")
         }
 
@@ -2078,7 +2092,7 @@ class FelicityPlayerService : MediaLibraryService(), SharedPreferences.OnSharedP
                 if (currentSong != null) {
                     val newFavoriteState = !currentSong.isFavorite
                     serviceScope.launch(Dispatchers.IO) {
-                        audioRepository.setFavorite(currentSong.id, newFavoriteState)
+                        audioRepository.setFavorite(currentSong, newFavoriteState)
                         // Update the in-memory Audio object so the button reflects the new state
                         // without waiting for the next database read to come through.
                         currentSong.isFavorite = newFavoriteState

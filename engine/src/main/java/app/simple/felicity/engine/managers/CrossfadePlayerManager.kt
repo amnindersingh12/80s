@@ -18,6 +18,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
@@ -202,6 +203,8 @@ class CrossfadePlayerManager(
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setLoadControl(loadControl)
             .setPlaybackLooper(playbackThread.looper)
+            // http(s) streams from the web/ server get the access-key header; local files unchanged.
+            .setMediaSourceFactory(DefaultMediaSourceFactory(RemoteDataSources.factory(context)))
             .build()
 
         val slot = Slot(sink, player)

@@ -5,6 +5,7 @@ import android.provider.DocumentsContract
 import androidx.core.net.toUri
 import androidx.sqlite.db.SimpleSQLiteQuery
 import app.simple.felicity.preferences.LibraryPreferences
+import app.simple.felicity.repository.database.dao.AudioDao
 import app.simple.felicity.repository.database.dao.PlaybackStateDao
 import app.simple.felicity.repository.database.instances.AudioDatabase
 import app.simple.felicity.repository.models.Album
@@ -78,6 +79,33 @@ class AudioRepository @Inject constructor(
      */
     suspend fun setFavorite(id: Long, isFavorite: Boolean) = withContext(Dispatchers.IO) {
         audioDatabase.audioDao()?.setFavorite(id, isFavorite)
+    }
+
+    /**
+     * Ensures remote streaming tracks (`http*` / negative synthetic id) are persisted as
+     * `is_available = false` rows so playlists and favorites persist without polluting the
+     * offline local library, then updates the favorite flag.
+     */
+    suspend fun setFavorite(audio: Audio, isFavorite: Boolean) = withContext(Dispatchers.IO) {
+        val dao = audioDatabase.audioDao() ?: return@withContext
+        ensureRemoteTrackStoredLocked(dao, audio, isFavorite)
+        dao.setFavorite(audio.id, isFavorite)
+    }
+
+    suspend fun ensureRemoteTrackStored(audio: Audio) = withContext(Dispatchers.IO) {
+        val dao = audioDatabase.audioDao() ?: return@withContext
+        ensureRemoteTrackStoredLocked(dao, audio, audio.isFavorite)
+    }
+
+    private suspend fun ensureRemoteTrackStoredLocked(dao: AudioDao, audio: Audio, isFavorite: Boolean) {
+        if (audio.id >= 0 && !audio.uri.startsWith("http")) return
+        if (dao.getAudioById(audio.id) == null) {
+            val copy = audio.copy().apply {
+                setAvailable(false)
+                setFavorite(isFavorite)
+            }
+            dao.insert(copy)
+        }
     }
 
     /**

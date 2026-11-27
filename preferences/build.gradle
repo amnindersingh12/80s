@@ -7,6 +7,7 @@ android {
 
 dependencies {
     implementation project(':shared')
+    api project(':remote')
     implementation project(':core')
 
     implementation 'dev.spght:encryptedprefs-ktx:1.1.1'

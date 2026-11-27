@@ -35,6 +35,12 @@ object AudioCover {
      */
     fun load(context: Context, audio: Audio): Bitmap? {
         val audioPath = audio.uri ?: return null
+
+        // Streaming tracks from the web/ server: there is no file to inspect, use the server's cover.
+        if (RemoteCover.isRemote(audio)) {
+            return RemoteCover.load(context, audio) ?: BaseCoverLoader.loadEmptyAudioCover()
+        }
+
         val isSAFPath = audioPath.startsWith("content://")
 
         if (LibraryPreferences.isUseMediaStoreArtwork()) {

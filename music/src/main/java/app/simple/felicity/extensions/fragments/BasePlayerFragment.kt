@@ -29,6 +29,7 @@ import app.simple.felicity.decorations.views.FelicityMediaControls
 import app.simple.felicity.decorations.views.FelicityVisualizer
 import app.simple.felicity.decorations.views.FlexStackLayout
 import app.simple.felicity.dialogs.app.AudioPipelineDialog.Companion.showAudioPipeline
+import app.simple.felicity.dialogs.app.LosslessDetailsDialog.Companion.showLosslessDetails
 import app.simple.felicity.dialogs.player.SleepTimerDialog.Companion.openSleepTimerDialog
 import app.simple.felicity.dialogs.player.VisualizerMenu.Companion.showVisualizerMenu
 import app.simple.felicity.dialogs.player.WaveformMenu.Companion.showWaveformMenu
@@ -42,11 +43,15 @@ import app.simple.felicity.preferences.AlbumArtPreferences
 import app.simple.felicity.preferences.AudioPreferences
 import app.simple.felicity.preferences.PlayerPreferences
 import app.simple.felicity.preferences.UserInterfacePreferences
+import app.simple.felicity.remote.RemoteCatalog
+import app.simple.felicity.remote.RemoteIds
 import app.simple.felicity.repository.constants.MediaConstants
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.utils.AudioUtils.getProperAlbum
 import app.simple.felicity.repository.utils.AudioUtils.getProperArtists
 import app.simple.felicity.repository.utils.AudioUtils.getProperTitle
+import app.simple.felicity.streaming.ArtworkColorHelper
+import app.simple.felicity.streaming.OnlineVisualizerBridge
 import app.simple.felicity.ui.panels.Equalizer
 import app.simple.felicity.ui.panels.Lyrics
 import app.simple.felicity.ui.panels.PlayingQueue
@@ -74,6 +79,7 @@ abstract class BasePlayerFragment : MediaFragment() {
 
     private var imagePageAdapter: ImagePageAdapter? = null
     private var swipeDownListener: SwipeDownToCloseListener? = null
+    private var onlineVisualizerBridge: OnlineVisualizerBridge? = null
 
     /** ViewModel that decodes and exposes the per-second waveform amplitude data. */
     private val waveformViewModel: WaveformViewModel by viewModels()
@@ -357,8 +363,10 @@ abstract class BasePlayerFragment : MediaFragment() {
         }
 
         pcmInfo.setOnClickListener {
-            // TODO - remove this when we have audio processor support on 32bit mode
-            if (shouldShowProcessors()) {
+            val current = MediaPlaybackManager.getCurrentSong()
+            if (current != null && RemoteIds.isRemoteAudioId(current.id)) {
+                childFragmentManager.showLosslessDetails()
+            } else if (shouldShowProcessors()) {
                 childFragmentManager.showAudioPipeline()
             } else {
                 showWarning("All processors are disabled. PCM info is not available in 32-bit output mode.")
@@ -495,18 +503,24 @@ abstract class BasePlayerFragment : MediaFragment() {
     }
 
     private fun setVisualizerState() {
-        if (PlayerPreferences.isVisualizerEnabled() && shouldShowProcessors()) {
-            // Wire the visualizer view's twin buffers directly to the audio processor so the
-            // audio thread can write FFT magnitudes without any intermediate coroutine hop.
-            // setDirectOutput is a no-op when the processor is not yet available (service not
-            // started), but in practice the service starts before this fragment is shown.
+        val current = MediaPlaybackManager.getCurrentSong()
+        val isRemote = current != null && RemoteIds.isRemoteAudioId(current.id)
+        if (PlayerPreferences.isVisualizerEnabled() && shouldShowProcessors() && !isRemote) {
+            onlineVisualizerBridge?.stop()
             VisualizerManager.processor?.setDirectOutput(
                     visualizer.bufferA,
                     visualizer.bufferB,
                     visualizer.isBufferAFront,
                     visualizer
             )
+        } else if (PlayerPreferences.isVisualizerEnabled()) {
+            VisualizerManager.processor?.clearDirectOutput()
+            val bridge = onlineVisualizerBridge ?: OnlineVisualizerBridge(requireContext(), visualizer).also {
+                onlineVisualizerBridge = it
+            }
+            bridge.start(MediaPlaybackManager.audioSessionIdFlow.value)
         } else {
+            onlineVisualizerBridge?.stop()
             VisualizerManager.processor?.clearDirectOutput()
         }
 
@@ -558,15 +572,47 @@ abstract class BasePlayerFragment : MediaFragment() {
         }
     }
 
+    private fun formatQualityPill(audio: Audio): String {
+        val remote = RemoteCatalog.get(audio.id)
+        if (remote != null) return remote.losslessBadge
+        return PcmInfoFormatter.formatPcmInfo(audio)
+    }
+
+    private fun updateBackdropTint(audio: Audio) {
+        val root = view ?: return
+        val remoteCover = RemoteCatalog.get(audio.id)?.coverUrl
+        if (!remoteCover.isNullOrBlank()) {
+            ArtworkColorHelper.tintFromUrl(requireContext(), remoteCover, root, 0.28f)
+        } else {
+            Glide.with(this)
+                .asBitmap()
+                .load(audio)
+                .override(64, 64)
+                .into(object : com.bumptech.glide.request.target.CustomTarget<android.graphics.Bitmap>() {
+                    override fun onResourceReady(
+                            resource: android.graphics.Bitmap,
+                            transition: com.bumptech.glide.request.transition.Transition<in android.graphics.Bitmap>?,
+                    ) {
+                        ArtworkColorHelper.applyAmbientGradient(root, ArtworkColorHelper.extractDominantColor(resource), 0.26f)
+                    }
+
+                    override fun onLoadCleared(placeholder: android.graphics.drawable.Drawable?) = Unit
+                })
+        }
+    }
+
     private fun updateState() {
         val audio = MediaPlaybackManager.getCurrentSong() ?: return
         lastLoadedAudioId = audio.id
         title.text = audio.getProperTitle()
         artist.text = audio.getProperArtists()
         album.text = audio.getProperAlbum()
-        pcmInfo.text = PcmInfoFormatter.formatPcmInfo(audio)
+        pcmInfo.text = formatQualityPill(audio)
+        updateBackdropTint(audio)
+        setVisualizerState()
         waveformSeekbar.setDuration(audio.duration)
         waveformSeekbar.setProgress(MediaPlaybackManager.getSeekPosition(), animate = false)
+        waveformSeekbar.setBufferedPosition(MediaPlaybackManager.getBufferedPosition())
         updatePlayButtonState(MediaPlaybackManager.isPlaying())
         updateFavoriteIcon(audio)
         waveformSeekbar.optics = UserInterfacePreferences.getWaveformOptics()
@@ -648,6 +694,8 @@ abstract class BasePlayerFragment : MediaFragment() {
 
     override fun onDestroyView() {
         handler.removeCallbacks(immersiveFadeRunnable)
+        onlineVisualizerBridge?.stop()
+        onlineVisualizerBridge = null
         // Release the direct twin-buffer connection so the audio thread no longer holds
         // a WeakReference to the now-destroyed visualizer view.
         VisualizerManager.processor?.clearDirectOutput()
@@ -699,7 +747,9 @@ abstract class BasePlayerFragment : MediaFragment() {
             title.setTextWithEffect(audio.getProperTitle(), forward)
             artist.setTextWithEffect(audio.getProperArtists(), forward, 50L)
             album.setTextWithEffect(audio.getProperAlbum(), forward, 100L)
-            pcmInfo.text = PcmInfoFormatter.formatPcmInfo(audio)
+            pcmInfo.text = formatQualityPill(audio)
+            updateBackdropTint(audio)
+            setVisualizerState()
             waveformSeekbar.setDurationWithReset(audio.duration)
             lrc.clear()
             lyricsViewModel.loadLrcData()
@@ -709,6 +759,7 @@ abstract class BasePlayerFragment : MediaFragment() {
         // Always sync seek position. For a same-song re-emission (e.g., predictive back
         // cancel) this is the only seekbar call needed — no reset, no animation from zero.
         waveformSeekbar.setProgress(MediaPlaybackManager.getSeekPosition(), animate = true)
+        waveformSeekbar.setBufferedPosition(MediaPlaybackManager.getBufferedPosition())
         updateFavoriteIcon(audio)
 
         // Defer waveform decoding until ExoPlayer is actually playing to avoid
@@ -723,6 +774,7 @@ abstract class BasePlayerFragment : MediaFragment() {
     override fun onSeekChanged(seek: Long) {
         super.onSeekChanged(seek)
         waveformSeekbar.setProgress(seek, animate = true)
+        waveformSeekbar.setBufferedPosition(MediaPlaybackManager.getBufferedPosition())
         lrc.updateTime(seek + lyricsViewModel.syncOffset)
     }
 

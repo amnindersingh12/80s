@@ -172,7 +172,8 @@ open class CustomHorizontalRecyclerView : ThemeRecyclerView {
 
     private inline fun <reified T : HorizontalListViewHolder> RecyclerView.forEachVisibleHolder(action: (T) -> Unit) {
         for (i in 0 until childCount) {
-            action(getChildViewHolder(getChildAt(i)) as T)
+            val child = getChildAt(i) ?: continue
+            (getChildViewHolder(child) as? T)?.let(action)
         }
     }
 }

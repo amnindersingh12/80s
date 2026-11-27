@@ -69,6 +69,7 @@ class SimpleHome : BaseHomeFragment() {
         }
 
         setupServerToggle(headerBinding.serverToggle)
+        setupOnlineOfflineToggle(headerBinding.modeToggle.modeOnline, headerBinding.modeToggle.modeOffline)
 
         homeViewModel!!.getHomeData().observe(viewLifecycleOwner) { list ->
             adapterSimpleHome = AdapterSimpleHome(list)

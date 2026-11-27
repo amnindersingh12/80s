@@ -41,6 +41,7 @@ import app.simple.felicity.ui.preferences.sub.AccentColors
 import app.simple.felicity.ui.preferences.sub.ArtistWhitelist
 import app.simple.felicity.ui.preferences.sub.Language
 import app.simple.felicity.ui.preferences.sub.MusicFolders
+import app.simple.felicity.ui.preferences.sub.StreamingServer
 import app.simple.felicity.ui.preferences.sub.PanelVisibility
 import app.simple.felicity.ui.preferences.sub.Themes
 import app.simple.felicity.ui.preferences.sub.TypeFaces
@@ -1303,6 +1304,16 @@ abstract class PreferenceFragment : MediaFragment() {
                 }
         )
 
+        val streamingServer = Preference(
+                title = R.string.remote_server,
+                summary = R.string.remote_server_summary,
+                icon = R.drawable.ic_cloud,
+                type = PreferenceType.PANEL,
+                onPreferenceAction = { view, callback ->
+                    openFragment(StreamingServer.newInstance(), StreamingServer.TAG)
+                }
+        )
+
         val scanLibrary = Preference(
                 title = R.string.scan_library,
                 summary = R.string.scan_library_summary,
@@ -1547,6 +1558,7 @@ abstract class PreferenceFragment : MediaFragment() {
         )
 
         preferences.add(folders)
+        preferences.add(streamingServer)
         preferences.add(scanLibrary)
         preferences.add(refreshLibrary)
         preferences.add(scannerOnResumeToggle)

@@ -363,7 +363,7 @@ class FelicityChipGroup @JvmOverloads constructor(
             val vPad = dp(6f).toInt()
             setPadding(hPad, vPad, hPad, vPad)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setText(chip.textResId)
+            if (chip.text != null) setText(chip.text) else setText(chip.textResId)
             if (!isInEditMode) {
                 typeface = TypeFace.getBoldTypeFace(context)
             }
@@ -529,6 +529,8 @@ class FelicityChipGroup @JvmOverloads constructor(
             @StringRes val textResId: Int,
             val tag: Any? = null,
             val onSelectionChanged: ((Boolean) -> Unit)? = null,
+            /** Optional runtime label (e.g. an artist name); takes precedence over [textResId]. */
+            val text: CharSequence? = null,
     )
 }
 

@@ -28,6 +28,7 @@ android {
 
 dependencies {
     implementation project(':preferences')
+    implementation project(':remote')
     implementation project(':core')
     implementation project(':shared')
 

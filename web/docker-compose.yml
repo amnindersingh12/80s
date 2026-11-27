@@ -1,0 +1,39 @@
+# One-command deploy:   docker compose up -d --build
+# With Redis cache:     docker compose --profile redis up -d --build
+#                       (and set REDIS_URL=redis://redis:6379/0 in .env)
+# Config check:         docker compose run --rm web node server/dist/doctor.js
+services:
+  web:
+    build: .
+    image: 80s-web:latest
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Must listen on all interfaces inside the container; publish below.
+      HOST: 0.0.0.0
+      PORT: 8787
+    ports:
+      - "${PUBLISH_PORT:-8787}:8787"
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false   # only started with --profile redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.extensions.viewmodels.WrappedViewModel
 import app.simple.felicity.preferences.FavoritesPreferences
+import app.simple.felicity.preferences.RemoteServerPreferences
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.repositories.AudioRepository
 import app.simple.felicity.repository.sort.FavoritesSort.sortedFavorites
@@ -55,9 +56,18 @@ class FavoritesViewModel @Inject constructor(
                 }
                 .flowOn(Dispatchers.IO)
                 .collect { list ->
-                    rawFavoriteList = list
-                    _favorites.value = list.sortedFavorites()
-                    Log.d(TAG, "Favorites loaded: ${list.size} songs")
+                    val filtered = if (RemoteServerPreferences.isOnlineMode()) {
+                        // Prefer local copies when the same artist + title is also saved as a remote favorite.
+                        val sortedPref = list.sortedBy { it.uri.startsWith("http") }
+                        sortedPref.distinctBy { a ->
+                            "${a.artist?.trim()?.lowercase().orEmpty()}|${a.title?.trim()?.lowercase().orEmpty()}".takeIf { it != "|" } ?: a.uri
+                        }
+                    } else {
+                        list.filterNot { it.uri.startsWith("http") }
+                    }
+                    rawFavoriteList = filtered
+                    _favorites.value = filtered.sortedFavorites()
+                    Log.d(TAG, "Favorites loaded: ${filtered.size} songs")
                 }
         }
     }

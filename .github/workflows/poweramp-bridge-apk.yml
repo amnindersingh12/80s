@@ -1,0 +1,52 @@
+name: 80s Poweramp Bridge APK
+
+on:
+    push:
+        branches:
+            - main
+        paths-ignore:
+            - "web/**"
+            - "**/*.md"
+    workflow_dispatch:
+
+concurrency:
+    group: poweramp-bridge-apk-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build-apk:
+        name: Build 80s Poweramp Bridge APK
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            -   name: Checkout code
+                uses: actions/checkout@v5
+
+            -   name: Set up Java 17
+                uses: actions/setup-java@v4
+                with:
+                    java-version: '17'
+                    distribution: 'temurin'
+
+            -   name: Set up Gradle (with cache)
+                uses: gradle/actions/setup-gradle@v4
+
+            -   name: Install Android SDK (no NDK)
+                run: |
+                    yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+                    "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+                      "platforms;android-37.0" "build-tools;37.0.0" > /dev/null
+
+            -   name: Test & Build APK
+                run: |
+                    chmod +x ./gradlew
+                    ./gradlew -p poweramp-bridge testDebugUnitTest assembleDebug
+                    cp poweramp-bridge/build/outputs/apk/debug/*.apk 80s-poweramp-bridge.apk
+
+            -   name: Upload 80s-poweramp-bridge.apk
+                uses: actions/upload-artifact@v4
+                with:
+                    name: 80s-poweramp-bridge.apk
+                    path: 80s-poweramp-bridge.apk
+                    if-no-files-found: error
+                    retention-days: 30

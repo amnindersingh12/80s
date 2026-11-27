@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.simple.felicity.repository.models.Audio
 import app.simple.felicity.repository.models.Playlist
+import app.simple.felicity.repository.repositories.AudioRepository
 import app.simple.felicity.repository.repositories.PlaylistRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
@@ -35,7 +36,8 @@ import kotlinx.coroutines.launch
 @HiltViewModel(assistedFactory = AddToPlaylistViewModel.Factory::class)
 class AddToPlaylistViewModel @AssistedInject constructor(
         @Assisted val audio: Audio,
-        private val playlistRepository: PlaylistRepository
+        private val playlistRepository: PlaylistRepository,
+        private val audioRepository: AudioRepository,
 ) : ViewModel() {
 
     /**
@@ -102,6 +104,9 @@ class AddToPlaylistViewModel @AssistedInject constructor(
     fun saveMembership(checkedIds: Set<Long>) {
         val audioHash = audio.hash
         viewModelScope.launch(Dispatchers.IO) {
+            if (checkedIds.isNotEmpty()) {
+                audioRepository.ensureRemoteTrackStored(audio)
+            }
             val allPlaylists = playlistRepository.getAllPlaylists().first()
             allPlaylists.forEach { playlist ->
                 val wasIn = playlistRepository.isSongInPlaylist(playlist.id, audioHash)

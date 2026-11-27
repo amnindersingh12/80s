@@ -1,0 +1,218 @@
+package app.simple.felicity.viewmodels.panels
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import app.simple.felicity.engine.managers.MediaPlaybackManager
+import app.simple.felicity.preferences.RemoteServerPreferences
+import app.simple.felicity.remote.RecommendationSeed
+import app.simple.felicity.remote.Recommendations
+import app.simple.felicity.remote.RemoteApiException
+import app.simple.felicity.remote.RemoteCatalog
+import app.simple.felicity.remote.SearchResult
+import app.simple.felicity.remote.ServerHealth
+import app.simple.felicity.remote.withWakeRetry
+import app.simple.felicity.streaming.RemoteMusicRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+/** Generic loading state for one request. */
+sealed interface Loadable<out T> {
+    data object Idle : Loadable<Nothing>
+    data object Loading : Loadable<Nothing>
+    data class Loaded<T>(val value: T) : Loadable<T>
+    data class Failed(val message: String, val accessDenied: Boolean = false) : Loadable<Nothing>
+}
+
+enum class RemoteTab { SEARCH, DISCOVER }
+
+/**
+ * State for the Stream panel: server status, debounced remote search and Discover/Radio
+ * recommendations. All network work goes through [RemoteMusicRepository].
+ */
+@OptIn(FlowPreview::class)
+@HiltViewModel
+class RemoteLibraryViewModel @Inject constructor(val remote: RemoteMusicRepository) : ViewModel() {
+
+    private val _tab = MutableStateFlow(RemoteTab.DISCOVER)
+    val tab: StateFlow<RemoteTab> = _tab.asStateFlow()
+
+    private val _health = MutableStateFlow<Loadable<ServerHealth>>(Loadable.Idle)
+    val health: StateFlow<Loadable<ServerHealth>> = _health.asStateFlow()
+
+    private val query = MutableStateFlow("")
+    private val _search = MutableStateFlow<Loadable<SearchResult>>(Loadable.Idle)
+    val search: StateFlow<Loadable<SearchResult>> = _search.asStateFlow()
+
+    private val _seed = MutableStateFlow<RecommendationSeed?>(null)
+    val seed: StateFlow<RecommendationSeed?> = _seed.asStateFlow()
+
+    private val _recommendations = MutableStateFlow<Loadable<Recommendations>>(Loadable.Idle)
+    val recommendations: StateFlow<Loadable<Recommendations>> = _recommendations.asStateFlow()
+
+    private val _localKeys = MutableStateFlow<Set<String>>(emptySet())
+    val localKeys: StateFlow<Set<String>> = _localKeys.asStateFlow()
+
+    private val _searchHistory = MutableStateFlow(RemoteServerPreferences.getSearchHistory())
+    val searchHistory: StateFlow<List<String>> = _searchHistory.asStateFlow()
+
+    private var recJob: Job? = null
+    private var lastHealthAtMs: Long = 0L
+
+    private val _waking = MutableStateFlow(false)
+
+    /** True while a request is slow enough that the server is probably waking from sleep. */
+    val waking: StateFlow<Boolean> = _waking.asStateFlow()
+
+    init {
+        refreshHealth()
+        refreshLocalKeys()
+        if (remote.isConfigured()) loadHome(DEFAULT_GENRE)
+        viewModelScope.launch {
+            query.debounce(500).distinctUntilChanged().collectLatest { q ->
+                if (q.isBlank()) {
+                    _search.value = Loadable.Idle
+                    return@collectLatest
+                }
+                _search.value = Loadable.Loading
+                val result = load { remote.search(q) }
+                _search.value = result
+                if (result is Loadable.Loaded && result.value.tracks.isNotEmpty()) {
+                    _searchHistory.value = RemoteServerPreferences.addSearchHistory(q)
+                }
+            }
+        }
+    }
+
+    fun setQuery(q: String) {
+        val trimmed = q.trim()
+        query.value = trimmed
+        _tab.value = if (trimmed.isBlank()) RemoteTab.DISCOVER else RemoteTab.SEARCH
+    }
+
+    fun refreshLocalKeys() {
+        viewModelScope.launch { _localKeys.value = remote.localLibraryKeys() }
+    }
+
+    fun currentQuery(): String = query.value
+
+    fun retrySearch() {
+        val q = query.value
+        if (q.isBlank()) return
+        _searchHistory.value = RemoteServerPreferences.addSearchHistory(q)
+        viewModelScope.launch {
+            _search.value = Loadable.Loading
+            _search.value = load { remote.search(q) }
+        }
+    }
+
+    fun clearSearchHistory() {
+        RemoteServerPreferences.clearSearchHistory()
+        _searchHistory.value = emptyList()
+    }
+
+    fun setTab(tab: RemoteTab) {
+        _tab.value = tab
+        if (tab == RemoteTab.DISCOVER && _seed.value == null) discover(nowPlayingSeed() ?: RecommendationSeed.tag(DEFAULT_GENRE))
+    }
+
+    fun refreshHealth(force: Boolean = true) {
+        if (!remote.isConfigured()) {
+            _health.value = Loadable.Idle
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (!force && _health.value is Loadable.Loaded && now - lastHealthAtMs < 60_000L) return
+        lastHealthAtMs = now
+        viewModelScope.launch {
+            _health.value = Loadable.Loading
+            _health.value = load { remote.health() }
+        }
+    }
+
+    /** Loads the Online Mode home feed (genre chip or artist seed) via `GET /api/home`. */
+    fun loadHome(genre: String? = DEFAULT_GENRE, seedArtist: String? = null) {
+        val seed = if (!seedArtist.isNullOrBlank()) RecommendationSeed.artist(seedArtist) else RecommendationSeed.tag(genre ?: DEFAULT_GENRE)
+        _seed.value = seed
+        recJob?.cancel()
+        recJob = viewModelScope.launch {
+            _recommendations.value = Loadable.Loading
+            _recommendations.value = load { remote.home(genre, seedArtist) }
+        }
+    }
+
+    /** Loads recommendations for [seed] (a track, an artist or a genre/scene tag). */
+    fun discover(seed: RecommendationSeed) {
+        _seed.value = seed
+        recJob?.cancel()
+        recJob = viewModelScope.launch {
+            _recommendations.value = Loadable.Loading
+            _recommendations.value = load { remote.recommendations(seed) }
+        }
+    }
+
+    fun followNowPlaying(): Boolean {
+        val seed = nowPlayingSeed() ?: return false
+        discover(seed)
+        return true
+    }
+
+    /** Seed from whatever is playing — a server track or a local file (artist + title). */
+    fun nowPlayingSeed(): RecommendationSeed? {
+        val audio = MediaPlaybackManager.getCurrentSong() ?: return null
+        RemoteCatalog.get(audio.id)?.let { return RecommendationSeed.track(it) }
+        val artist = audio.artist?.takeIf { it.isNotBlank() && !it.equals("<unknown>", true) } ?: return null
+        val title = audio.title?.takeIf { it.isNotBlank() } ?: return RecommendationSeed.artist(artist)
+        return RecommendationSeed.track(artist, title)
+    }
+
+    private suspend fun <T> load(block: suspend () -> T): Loadable<T> {
+        val hint = viewModelScope.launch {
+            delay(WAKE_HINT_MS)
+            _waking.value = true
+        }
+        return try {
+            Loadable.Loaded(withWakeRetry({ _waking.value = true }) { block() })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RemoteApiException) {
+            Loadable.Failed(e.message, e.isAccessDenied)
+        } catch (e: Exception) {
+            Loadable.Failed(e.message ?: e.javaClass.simpleName)
+        } finally {
+            hint.cancel()
+            _waking.value = false
+        }
+    }
+
+    companion object {
+        const val DEFAULT_GENRE = "punjabi pop"
+        private const val WAKE_HINT_MS = 2_500L
+
+        /** Genre / regional chips shown on Discover (same set as the web player); value = tag seed. */
+        val GENRES = listOf(
+                "Punjabi Pop" to "punjabi pop",
+                "Bhangra" to "bhangra",
+                "Hip-Hop" to "hip-hop",
+                "Indie" to "indie",
+                "Synthwave" to "synthwave",
+                "80s" to "80s",
+                "Lo-fi" to "lo-fi",
+                "Bollywood" to "bollywood",
+                "R&B" to "r&b",
+                "Electronic" to "electronic",
+                "Jazz" to "jazz",
+                "Classical" to "classical",
+        )
+    }
+}
