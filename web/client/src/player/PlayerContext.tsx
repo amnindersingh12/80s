@@ -95,11 +95,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const generation = useRef(0);
   /** Track id currently attached to the <audio> element. */
   const loadedId = useRef<string | null>(null);
+  const unlockedRef = useRef(false);
   const pendingSeek = useRef<number | null>(null);
   const wantPlay = useRef(false);
   const autoRetried = useRef<string | null>(null);
   const prefetched = useRef(new Set<string>());
   const lastPositionSave = useRef(0);
+
+  /** Unlock the shared <audio> element inside the synchronous user gesture so delayed prepare() polls can autoplay on mobile. */
+  const primeAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || unlockedRef.current) return;
+    audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+    audio
+      .play()
+      .then(() => {
+        unlockedRef.current = true;
+      })
+      .catch(() => undefined);
+  }, []);
 
   const current = currentItem(queue);
 
@@ -110,10 +124,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!audio) return;
     const gen = ++generation.current;
     const id = item.track.id;
-    audio.pause();
-    audio.removeAttribute("src");
-    audio.load();
-    loadedId.current = null;
+    if (loadedId.current) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      loadedId.current = null;
+    }
     setPlayback((p) => ({
       ...p,
       status: "preparing",
@@ -152,13 +168,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       setPlayback((p) => ({ ...p, prepare: ready, status: autoplay ? "buffering" : "paused" }));
       loadedId.current = id;
       pendingSeek.current = startAt > 0 ? startAt : null;
-      audio.src = streamUrl(id);
+      audio.src = ready.signedStreamUrl ?? streamUrl(id);
       if (autoplay) {
         await audio.play().catch((err: unknown) => {
           if (gen !== generation.current) return;
-          // Autoplay policies: wait for a user gesture instead of failing.
-          if ((err as DOMException).name === "NotAllowedError") setPlayback((p) => ({ ...p, status: "paused" }));
-          else if ((err as DOMException).name !== "AbortError") throw err;
+          // Autoplay policies: load metadata and nudge the user to tap Play if still blocked.
+          if ((err as DOMException).name === "NotAllowedError") {
+            audio.load();
+            setPlayback((p) => ({ ...p, status: "paused" }));
+            toast.show("Tap Play to start audio playback");
+          } else if ((err as DOMException).name !== "AbortError") throw err;
         });
       }
     } catch (err) {
@@ -391,6 +410,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     const p = playbackRef.current;
     if (p.status === "error") {
+      primeAudio();
       wantPlay.current = true;
       void load(item, true, p.currentTime);
       return;
@@ -398,6 +418,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (p.status === "preparing") return;
     if (loadedId.current !== item.track.id) {
       // Restored from a previous session: resume where we left off.
+      primeAudio();
       wantPlay.current = true;
       const saved = storage.get<{ id?: string; t?: number }>(POSITION_KEY, {});
       void load(item, true, saved.id === item.track.id ? (saved.t ?? 0) : 0);
@@ -409,10 +430,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     } else {
       audio.pause();
     }
-  }, [load]);
+  }, [load, primeAudio]);
 
   const commands = useMemo(() => {
     const go = (action: Parameters<typeof dispatch>[0]) => {
+      primeAudio();
       wantPlay.current = true;
       dispatch(action);
     };
@@ -473,6 +495,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       retry: () => {
         const item = currentItem(queueRef.current);
         if (!item) return;
+        primeAudio();
         wantPlay.current = true;
         autoRetried.current = null;
         void load(item, true, playbackRef.current.currentTime);
@@ -512,8 +535,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   return (
     <PlayerCtx.Provider value={value}>
       {children}
-      {/* preload="none": nothing is fetched until a track is prepared and played. */}
-      <audio ref={audioRef} preload="none" />
+      {/* preload="auto": start fetching the prepared stream URL immediately once attached. */}
+      <audio ref={audioRef} preload="auto" />
     </PlayerCtx.Provider>
   );
 }

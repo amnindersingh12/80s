@@ -36,6 +36,20 @@ class BridgePrefs(context: Context) {
         get() = prefs.getLong(KEY_LAST_RADIO_AT, 0L)
         set(value) = prefs.edit().putLong(KEY_LAST_RADIO_AT, value).apply()
 
+    var recentSearches: List<String>
+        get() = prefs.getString(KEY_RECENT_SEARCHES, "")
+            ?.split("\n")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?: emptyList()
+        set(value) = prefs.edit().putString(KEY_RECENT_SEARCHES, value.take(8).joinToString("\n")).apply()
+
+    fun addRecentSearch(query: String) {
+        val clean = query.trim()
+        if (clean.length < 2) return
+        recentSearches = (listOf(clean) + recentSearches.filterNot { it.equals(clean, ignoreCase = true) }).take(8)
+    }
+
     companion object {
         const val DEFAULT_SERVER_URL = "https://felicity-80s-b4c25417da9e.herokuapp.com"
         const val DEFAULT_DOWNLOAD_SUBDIR = "80s FLAC"
@@ -60,5 +74,6 @@ class BridgePrefs(context: Context) {
         private const val KEY_DOWNLOAD_SUBDIR = "download_subdir"
         private const val KEY_LAST_RADIO_SEED = "last_radio_seed"
         private const val KEY_LAST_RADIO_AT = "last_radio_at"
+        private const val KEY_RECENT_SEARCHES = "recent_searches"
     }
 }

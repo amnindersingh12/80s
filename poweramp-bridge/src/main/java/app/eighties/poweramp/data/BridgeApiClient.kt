@@ -56,15 +56,113 @@ class BridgeApiClient(
         )
     }
 
-    suspend fun search(query: String, limit: Int = 30): List<LosslessTrack> = withContext(Dispatchers.IO) {
+    suspend fun search(query: String, limit: Int = 30): List<LosslessTrack> =
+        searchCatalog(query, type = "tracks", limit = limit).tracks
+
+    suspend fun searchCatalog(
+        query: String,
+        type: String = "all",
+        limit: Int = 30,
+    ): SearchCatalogResult = withContext(Dispatchers.IO) {
         val httpUrl = endpoint("api", "search").toHttpUrlOrNull()
             ?.newBuilder()
             ?.addQueryParameter("q", query)
+            ?.addQueryParameter("type", type)
             ?.addQueryParameter("limit", limit.coerceIn(1, 50).toString())
             ?.build()
             ?: throw BridgeApiException("Invalid server URL")
         val dto = getJson(httpUrl.toString(), SearchDto::class.java)
-        dto.tracks.orEmpty().mapNotNull { it.toLosslessTrack() }
+        val tracks = dto.tracks.orEmpty().mapNotNull { it.toLosslessTrack() }
+        val artists = dto.artists.orEmpty().mapNotNull { it.toSummary() }
+        val albums = dto.albums.orEmpty().mapNotNull { it.toSummary() }
+        val top = dto.topResult?.toTopResult() ?: tracks.firstOrNull()?.let { SearchTopResult.TrackHit(it) }
+        SearchCatalogResult(
+            query = dto.query ?: query,
+            topResult = top,
+            tracks = tracks,
+            artists = artists,
+            albums = albums,
+        )
+    }
+
+    suspend fun artistDetail(id: String, name: String? = null): ArtistDetail = withContext(Dispatchers.IO) {
+        val builder = endpoint("api", "artists", id).toHttpUrlOrNull()?.newBuilder()
+            ?: throw BridgeApiException("Invalid server URL")
+        name?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("name", it) }
+        val dto = getJson(builder.build().toString(), ArtistDetailDto::class.java)
+        ArtistDetail(
+            id = dto.id ?: id,
+            name = dto.name ?: name ?: "Unknown Artist",
+            imageUrl = resolveAbsoluteUrl(dto.imageUrl),
+            bio = dto.bio,
+            genres = dto.genres.orEmpty(),
+            topTracks = dto.topTracks.orEmpty().mapNotNull { it.toLosslessTrack() },
+            albums = dto.albums.orEmpty().mapNotNull { it.toSummary() },
+            similarArtists = dto.similarArtists.orEmpty().mapNotNull { s ->
+                s.name?.let { ArtistSummary(id = "name:${java.net.URLEncoder.encode(it, "UTF-8")}", name = it, imageUrl = resolveAbsoluteUrl(s.imageUrl)) }
+            },
+        )
+    }
+
+    suspend fun albumDetail(id: String, title: String? = null, artist: String? = null): AlbumDetail = withContext(Dispatchers.IO) {
+        val builder = endpoint("api", "albums", id).toHttpUrlOrNull()?.newBuilder()
+            ?: throw BridgeApiException("Invalid server URL")
+        title?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("title", it) }
+        artist?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("artist", it) }
+        val dto = getJson(builder.build().toString(), AlbumDetailDto::class.java)
+        val tracks = dto.tracks.orEmpty().mapNotNull { it.toLosslessTrack() }
+        AlbumDetail(
+            id = dto.id ?: id,
+            title = dto.title ?: title ?: "Album",
+            artist = dto.artist ?: artist ?: "Unknown Artist",
+            artistId = dto.artistId,
+            coverUrl = resolveAbsoluteUrl(dto.coverUrl) ?: tracks.firstOrNull()?.artworkUrl,
+            year = dto.year,
+            trackCount = dto.trackCount ?: tracks.size,
+            totalDurationMs = dto.totalDurationMs ?: tracks.sumOf { it.effectiveDurationMs },
+            codec = dto.codec ?: "FLAC",
+            bitDepth = dto.bitDepth,
+            sampleRate = dto.sampleRate,
+            qualityTier = dto.qualityTier ?: "LOSSLESS",
+            tracks = tracks,
+        )
+    }
+
+    suspend fun homeFeed(
+        genre: String? = null,
+        nowPlayingArtist: String? = null,
+        nowPlayingTrack: String? = null,
+        limit: Int = 24,
+    ): HomeFeed = withContext(Dispatchers.IO) {
+        val builder = endpoint("api", "home").toHttpUrlOrNull()?.newBuilder()
+            ?: throw BridgeApiException("Invalid server URL")
+        builder.addQueryParameter("limit", limit.coerceIn(1, 50).toString())
+        genre?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("genre", it) }
+        nowPlayingArtist?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("nowPlayingArtist", it) }
+        nowPlayingTrack?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("nowPlayingTrack", it) }
+        val dto = getJson(builder.build().toString(), HomeDto::class.java)
+        val tracks = mapHomeRecommendations(dto.relatedTracks.orEmpty(), limit)
+        val becauseTracks = mapHomeRecommendations(dto.becauseYouPlayed?.tracks.orEmpty(), 12)
+        val featured = dto.featuredTrack?.toLosslessTrack() ?: tracks.firstOrNull { !it.id.startsWith(LosslessTrack.RESOLVE_PREFIX) }
+        val albums = dto.albums.orEmpty().mapNotNull { it.toSummary() }
+        val artists = dto.similarArtists.orEmpty().mapNotNull { s ->
+            s.name?.let {
+                ArtistSummary(
+                    id = "name:${java.net.URLEncoder.encode(it, "UTF-8")}",
+                    name = it,
+                    imageUrl = resolveAbsoluteUrl(s.imageUrl),
+                )
+            }
+        }
+        HomeFeed(
+            genre = dto.genre ?: genre ?: "mixed",
+            featuredTrack = featured,
+            tracks = tracks,
+            becauseYouPlayedLabel = dto.becauseYouPlayed?.label,
+            becauseYouPlayed = becauseTracks,
+            albums = albums,
+            artists = artists,
+        )
     }
 
     suspend fun home(
@@ -80,9 +178,13 @@ class BridgeApiClient(
         seedArtist?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("seedArtist", it) }
         seedTrack?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("seedTrack", it) }
         val dto = getJson(builder.build().toString(), HomeDto::class.java)
+        mapHomeRecommendations(dto.relatedTracks.orEmpty(), limit)
+    }
+
+    private fun mapHomeRecommendations(recs: List<RecTrackDto>, limit: Int): List<LosslessTrack> {
         val playable = mutableListOf<LosslessTrack>()
         val unresolved = mutableListOf<LosslessTrack>()
-        for (rec in dto.relatedTracks.orEmpty()) {
+        for (rec in recs) {
             val t = rec.track?.toLosslessTrack(rec.reason, rec.album, rec.coverUrl ?: rec.artworkUrl)
             if (t != null) {
                 playable.add(t)
@@ -106,7 +208,7 @@ class BridgeApiClient(
                 )
             }
         }
-        (playable + unresolved).take(limit)
+        return (playable + unresolved).take(limit)
     }
 
     suspend fun prepareOrResolve(track: LosslessTrack): PreparedStream = withContext(Dispatchers.IO) {
@@ -322,7 +424,10 @@ class BridgeApiClient(
             provider = provider ?: trackId.substringBefore(':', "remote"),
             title = title?.takeIf { it.isNotBlank() } ?: "Untitled",
             artist = artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist",
+            artistId = artistId?.takeIf { it.isNotBlank() },
+            albumArtist = albumArtist?.takeIf { it.isNotBlank() },
             album = album ?: fallbackAlbum,
+            albumId = albumId?.takeIf { it.isNotBlank() },
             year = year,
             trackNumber = trackNumber,
             durationSec = durSec,
@@ -336,6 +441,41 @@ class BridgeApiClient(
             qualityTier = qualityTier ?: if ((bitDepth ?: 0) > 16 || (sampleRate ?: 0) > 48_000) "HI-RES LOSSLESS" else "LOSSLESS",
             reason = reason ?: fallbackReason,
         )
+    }
+
+        private fun ArtistDto.toSummary(): ArtistSummary? {
+        val rawName = name?.takeIf { it.isNotBlank() } ?: return null
+        val rawId = id?.takeIf { it.isNotBlank() } ?: "name:${java.net.URLEncoder.encode(rawName, "UTF-8")}"
+        return ArtistSummary(
+            id = rawId,
+            name = rawName,
+            imageUrl = resolveAbsoluteUrl(imageUrl),
+            genres = genres.orEmpty(),
+        )
+    }
+
+    private fun AlbumDto.toSummary(): AlbumSummary? {
+        val rawTitle = title?.takeIf { it.isNotBlank() } ?: return null
+        val rawId = id?.takeIf { it.isNotBlank() } ?: return null
+        return AlbumSummary(
+            id = rawId,
+            title = rawTitle,
+            artist = artist ?: "Unknown Artist",
+            artistId = artistId,
+            coverUrl = resolveAbsoluteUrl(coverUrl),
+            year = year,
+            trackCount = trackCount,
+            qualityTier = qualityTier ?: "LOSSLESS",
+        )
+    }
+
+    private fun TopResultDto.toTopResult(): SearchTopResult? {
+        val rawItem = item ?: return null
+        return when (kind?.lowercase()) {
+            "artist" -> gson.fromJson(gson.toJsonTree(rawItem), ArtistDto::class.java)?.toSummary()?.let { SearchTopResult.ArtistHit(it) }
+            "album" -> gson.fromJson(gson.toJsonTree(rawItem), AlbumDto::class.java)?.toSummary()?.let { SearchTopResult.AlbumHit(it) }
+            else -> gson.fromJson(gson.toJsonTree(rawItem), TrackDto::class.java)?.toLosslessTrack()?.let { SearchTopResult.TrackHit(it) }
+        }
     }
 
     companion object {
@@ -354,7 +494,10 @@ internal class TrackDto(
     val provider: String? = null,
     val title: String? = null,
     val artist: String? = null,
+    val artistId: String? = null,
+    val albumArtist: String? = null,
     val album: String? = null,
+    val albumId: String? = null,
     val durationSec: Double? = null,
     val durationMs: Long? = null,
     val coverUrl: String? = null,
@@ -372,7 +515,70 @@ internal class TrackDto(
     val reason: String? = null,
 )
 
-internal class SearchDto(val tracks: List<TrackDto>? = null)
+internal class ArtistDto(
+    val id: String? = null,
+    val name: String? = null,
+    val imageUrl: String? = null,
+    val genres: List<String>? = null,
+)
+
+internal class AlbumDto(
+    val id: String? = null,
+    val title: String? = null,
+    val artist: String? = null,
+    val artistId: String? = null,
+    val coverUrl: String? = null,
+    val year: Int? = null,
+    val trackCount: Int? = null,
+    val qualityTier: String? = null,
+)
+
+internal class TopResultDto(
+    val kind: String? = null,
+    val item: Map<String, Any?>? = null,
+)
+
+internal class SearchDto(
+    val query: String? = null,
+    val topResult: TopResultDto? = null,
+    val tracks: List<TrackDto>? = null,
+    val artists: List<ArtistDto>? = null,
+    val albums: List<AlbumDto>? = null,
+)
+
+internal class SimilarArtistDto(val name: String? = null, val imageUrl: String? = null)
+
+internal class ArtistDetailDto(
+    val id: String? = null,
+    val name: String? = null,
+    val imageUrl: String? = null,
+    val bio: String? = null,
+    val genres: List<String>? = null,
+    val topTracks: List<TrackDto>? = null,
+    val albums: List<AlbumDto>? = null,
+    val similarArtists: List<SimilarArtistDto>? = null,
+)
+
+internal class AlbumDetailDto(
+    val id: String? = null,
+    val title: String? = null,
+    val artist: String? = null,
+    val artistId: String? = null,
+    val coverUrl: String? = null,
+    val year: Int? = null,
+    val trackCount: Int? = null,
+    val totalDurationMs: Long? = null,
+    val codec: String? = null,
+    val bitDepth: Int? = null,
+    val sampleRate: Int? = null,
+    val qualityTier: String? = null,
+    val tracks: List<TrackDto>? = null,
+)
+
+internal class BecauseYouPlayedDto(
+    val label: String? = null,
+    val tracks: List<RecTrackDto>? = null,
+)
 
 internal class RecTrackDto(
     val title: String? = null,
@@ -386,7 +592,14 @@ internal class RecTrackDto(
     val reason: String? = null,
 )
 
-internal class HomeDto(val relatedTracks: List<RecTrackDto>? = null)
+internal class HomeDto(
+    val genre: String? = null,
+    val featuredTrack: TrackDto? = null,
+    val relatedTracks: List<RecTrackDto>? = null,
+    val becauseYouPlayed: BecauseYouPlayedDto? = null,
+    val albums: List<AlbumDto>? = null,
+    val similarArtists: List<SimilarArtistDto>? = null,
+)
 
 internal class ErrorDto(val message: String? = null)
 internal class ErrorBodyDto(val error: ErrorDto? = null)

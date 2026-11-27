@@ -1,6 +1,15 @@
-import type { ProviderHealth, Track } from "../../../shared/api.js";
+import type {
+  AlbumDetailResponse,
+  AlbumSummary,
+  ArtistDetailResponse,
+  ArtistSummary,
+  ProviderHealth,
+  SearchFilterType,
+  SearchTopResult,
+  Track,
+} from "../../../shared/api.js";
 import { AppError, isFailoverEligible } from "../errors.js";
-import { bestMatch } from "../lib/text.js";
+import { bestMatch, normalizeText } from "../lib/text.js";
 import type { CachedProvider } from "./cached.js";
 import { normalizeLosslessMetadata, type ProviderTrack, type StreamOptions, type StreamSource } from "./types.js";
 
@@ -18,6 +27,12 @@ export interface ChainSearchResult {
   provider: string;
   fallback: boolean;
   cached: boolean;
+}
+
+export interface ChainCatalogSearchResult extends ChainSearchResult {
+  topResult?: SearchTopResult;
+  artists: ArtistSummary[];
+  albums: AlbumSummary[];
 }
 
 export interface ProviderChainOptions {
@@ -41,7 +56,70 @@ export function parsePublicId(id: string): { provider: string; rawId: string } {
 
 function toPublic(t: ProviderTrack): Track {
   const normalized = normalizeLosslessMetadata(t);
-  return { ...normalized, id: publicId(t.provider, t.id) };
+  return {
+    ...normalized,
+    id: publicId(t.provider, t.id),
+    ...(t.artistId ? { artistId: t.artistId.includes(":") ? t.artistId : publicId(t.provider, t.artistId) } : {}),
+    ...(t.albumId ? { albumId: t.albumId.includes(":") ? t.albumId : publicId(t.provider, t.albumId) } : {}),
+  };
+}
+
+function isLosslessTrack(t: ProviderTrack): boolean {
+  return Boolean(t.lossless && !["mp3", "aac", "ogg", "opus", "vorbis", "webm"].includes(t.format?.toLowerCase() ?? ""));
+}
+
+function deriveArtistsFromTracks(tracks: Track[]): ArtistSummary[] {
+  const seen = new Map<string, ArtistSummary>();
+  for (const t of tracks) {
+    const primary = (t.albumArtist || t.artist).split(/,|&|\bfeat\.?|\bft\.?/i)[0]?.trim() || t.artist;
+    const key = normalizeText(primary);
+    if (!key || seen.has(key)) continue;
+    seen.set(key, {
+      id: t.artistId ?? `name:${encodeURIComponent(primary)}`,
+      name: primary,
+      ...(t.coverUrl ? { imageUrl: t.coverUrl } : {}),
+      provider: t.provider,
+    });
+  }
+  return [...seen.values()].slice(0, 10);
+}
+
+export function deriveAlbumsFromTracks(tracks: Track[]): AlbumSummary[] {
+  const seen = new Map<string, AlbumSummary>();
+  for (const t of tracks) {
+    if (!t.album) continue;
+    const artist = t.albumArtist || t.artist;
+    const key = `${normalizeText(t.album)}|${normalizeText(artist)}`;
+    if (seen.has(key)) continue;
+    seen.set(key, {
+      id: t.albumId ?? `alb:${encodeURIComponent(artist)}|${encodeURIComponent(t.album)}`,
+      title: t.album,
+      artist,
+      ...(t.artistId ? { artistId: t.artistId } : {}),
+      ...(t.coverUrl ? { coverUrl: t.coverUrl } : {}),
+      ...(t.year ? { year: t.year } : {}),
+      codec: t.codec ?? "FLAC",
+      ...(t.bitDepth ? { bitDepth: t.bitDepth } : {}),
+      ...(t.sampleRate ? { sampleRate: t.sampleRate } : {}),
+      qualityTier: t.qualityTier ?? "LOSSLESS",
+      provider: t.provider,
+    });
+  }
+  return [...seen.values()].slice(0, 12);
+}
+
+function pickTopResult(query: string, tracks: Track[], artists: ArtistSummary[], albums: AlbumSummary[]): SearchTopResult | undefined {
+  const nq = normalizeText(query);
+  const exactArtist = artists.find((a) => normalizeText(a.name) === nq);
+  const exactTrack = tracks.find((t) => normalizeText(t.title) === nq);
+  const exactAlbum = albums.find((al) => normalizeText(al.title) === nq);
+  if (exactTrack) return { kind: "track", item: exactTrack };
+  if (exactArtist) return { kind: "artist", item: exactArtist };
+  if (exactAlbum) return { kind: "album", item: exactAlbum };
+  if (tracks[0]) return { kind: "track", item: tracks[0] };
+  if (artists[0]) return { kind: "artist", item: artists[0] };
+  if (albums[0]) return { kind: "album", item: albums[0] };
+  return undefined;
 }
 
 /**
@@ -104,7 +182,7 @@ export class ProviderChain {
         const { tracks, cached } = await p.searchWithMeta(query, options);
         this.recordSuccess(p.name);
         return {
-          tracks: tracks.filter((t) => t.lossless && !["mp3", "aac", "ogg", "opus", "vorbis", "webm"].includes(t.format?.toLowerCase() ?? "")).map(toPublic),
+          tracks: tracks.filter(isLosslessTrack).map(toPublic),
           provider: p.name,
           fallback: p !== this.primary,
           cached,
@@ -118,6 +196,103 @@ export class ProviderChain {
       }
     }
     throw lastErr;
+  }
+
+  async searchCatalog(
+    query: string,
+    options: { limit?: number; type?: SearchFilterType; signal?: AbortSignal } = {},
+  ): Promise<ChainCatalogSearchResult> {
+    const order = this.order();
+    const type = options.type ?? "all";
+    let lastErr: unknown;
+    for (const [i, p] of order.entries()) {
+      try {
+        const { catalog, cached } = await p.searchCatalogWithMeta(query, options);
+        this.recordSuccess(p.name);
+        const publicTracks = catalog.tracks.filter(isLosslessTrack).map(toPublic);
+        const rawArtists = catalog.artists.map((a) => ({
+          ...a,
+          id: a.id.includes(":") ? a.id : publicId(p.name, a.id),
+          provider: p.name,
+        }));
+        const rawAlbums = catalog.albums.map((al) => ({
+          ...al,
+          id: al.id.includes(":") ? al.id : publicId(p.name, al.id),
+          ...(al.artistId ? { artistId: al.artistId.includes(":") ? al.artistId : publicId(p.name, al.artistId) } : {}),
+          provider: p.name,
+        }));
+        const artists = rawArtists.length ? rawArtists : deriveArtistsFromTracks(publicTracks);
+        const albums = rawAlbums.length ? rawAlbums : deriveAlbumsFromTracks(publicTracks);
+        const topResult = pickTopResult(query, publicTracks, artists, albums);
+        return {
+          tracks: type === "artists" || type === "albums" ? [] : publicTracks,
+          artists: type === "tracks" || type === "albums" ? [] : artists,
+          albums: type === "tracks" || type === "artists" ? [] : albums,
+          ...(topResult ? { topResult } : {}),
+          provider: p.name,
+          fallback: p !== this.primary,
+          cached,
+        };
+      } catch (err) {
+        lastErr = err;
+        if (!isFailoverEligible(err)) throw err;
+        this.recordFailure(p.name, err);
+        const next = order[i + 1];
+        if (next) this.options.onFailover?.({ op: "searchCatalog", from: p.name, to: next.name, error: err as AppError });
+      }
+    }
+    throw lastErr;
+  }
+
+  async getArtist(id: string): Promise<ArtistDetailResponse | null> {
+    if (!id.includes(":")) return null;
+    const { provider, rawId } = parsePublicId(id);
+    if (provider === "name") return null;
+    const p = this.get(provider);
+    if (!p) return null;
+    const detail = await p.getArtist(rawId);
+    if (!detail) return null;
+    return {
+      id: publicId(provider, detail.id),
+      name: detail.name,
+      ...(detail.imageUrl ? { imageUrl: detail.imageUrl } : {}),
+      ...(detail.bio ? { bio: detail.bio } : {}),
+      genres: detail.genres,
+      topTracks: detail.topTracks.filter(isLosslessTrack).map((t) => toPublic({ ...t, provider })),
+      albums: detail.albums.map((al) => ({
+        ...al,
+        id: al.id.includes(":") ? al.id : publicId(provider, al.id),
+        ...(al.artistId ? { artistId: al.artistId.includes(":") ? al.artistId : publicId(provider, al.artistId) } : {}),
+        provider,
+      })),
+      similarArtists: detail.similarArtists ?? [],
+    };
+  }
+
+  async getAlbum(id: string): Promise<AlbumDetailResponse | null> {
+    if (!id.includes(":")) return null;
+    const { provider, rawId } = parsePublicId(id);
+    if (provider === "alb") return null;
+    const p = this.get(provider);
+    if (!p) return null;
+    const detail = await p.getAlbum(rawId);
+    if (!detail) return null;
+    const tracks = detail.tracks.filter(isLosslessTrack).map((t) => toPublic({ ...t, provider }));
+    return {
+      id: publicId(provider, detail.id),
+      title: detail.title,
+      artist: detail.artist,
+      ...(detail.artistId ? { artistId: detail.artistId.includes(":") ? detail.artistId : publicId(provider, detail.artistId) } : {}),
+      ...(detail.coverUrl ? { coverUrl: detail.coverUrl } : {}),
+      ...(detail.year ? { year: detail.year } : {}),
+      trackCount: detail.trackCount || tracks.length,
+      totalDurationMs: detail.totalDurationMs,
+      codec: detail.codec,
+      ...(detail.bitDepth ? { bitDepth: detail.bitDepth } : {}),
+      ...(detail.sampleRate ? { sampleRate: detail.sampleRate } : {}),
+      qualityTier: detail.qualityTier,
+      tracks,
+    };
   }
 
   async getTrack(id: string): Promise<Track | null> {

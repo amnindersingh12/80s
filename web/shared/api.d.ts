@@ -14,7 +14,10 @@ export interface Track {
   provider: string;
   title: string;
   artist: string;
+  artistId?: string;
   album?: string;
+  albumId?: string;
+  albumArtist?: string;
   durationSec?: number;
   durationMs?: number;
   /** Either a public https URL or a same-origin `/api/cover/:id` proxy path. */
@@ -34,14 +37,75 @@ export interface Track {
   isrc?: string;
 }
 
+export interface ArtistSummary {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  genres?: string[];
+  provider?: string;
+}
+
+export interface AlbumSummary {
+  id: string;
+  title: string;
+  artist: string;
+  artistId?: string;
+  coverUrl?: string;
+  year?: number;
+  trackCount?: number;
+  codec?: "FLAC" | "ALAC";
+  bitDepth?: number;
+  sampleRate?: number;
+  qualityTier?: "HI-RES LOSSLESS" | "LOSSLESS";
+  provider?: string;
+}
+
+export type SearchFilterType = "all" | "tracks" | "artists" | "albums";
+
+export type SearchTopResult =
+  | { kind: "track"; item: Track }
+  | { kind: "artist"; item: ArtistSummary }
+  | { kind: "album"; item: AlbumSummary };
+
 export interface SearchResponse {
   query: string;
+  type?: SearchFilterType;
+  topResult?: SearchTopResult;
   tracks: Track[];
+  artists?: ArtistSummary[];
+  albums?: AlbumSummary[];
   /** Provider that actually answered. */
   provider: string;
   /** True when the primary provider failed and a fallback answered. */
   fallback: boolean;
   cached: boolean;
+}
+
+export interface ArtistDetailResponse {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  bio?: string;
+  genres: string[];
+  topTracks: Track[];
+  albums: AlbumSummary[];
+  similarArtists: SimilarArtist[];
+}
+
+export interface AlbumDetailResponse {
+  id: string;
+  title: string;
+  artist: string;
+  artistId?: string;
+  coverUrl?: string;
+  year?: number;
+  trackCount: number;
+  totalDurationMs: number;
+  codec: "FLAC" | "ALAC";
+  bitDepth?: number;
+  sampleRate?: number;
+  qualityTier: "HI-RES LOSSLESS" | "LOSSLESS";
+  tracks: Track[];
 }
 
 export type PrepareState = "idle" | "preparing" | "ready" | "error";
@@ -127,6 +191,7 @@ export interface RecommendedTrack {
   title: string;
   artist: string;
   album?: string;
+  albumArtist?: string;
   durationSec?: number;
   durationMs?: number;
   coverUrl?: string;
@@ -188,6 +253,10 @@ export interface LyricsResponse {
 export interface HomeResponse extends RecommendationsResponse {
   genre: string;
   seedArtist?: string;
+  nowPlaying?: { artist: string; track: string };
+  becauseYouPlayed?: { label: string; tracks: RecommendedTrack[] };
+  featuredTrack?: Track;
+  albums?: AlbumSummary[];
 }
 
 export interface ProviderHealth {

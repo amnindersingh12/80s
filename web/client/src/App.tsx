@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { HealthResponse } from "../../shared/api";
 import { api, onAccessRequired } from "./api";
+import { AlbumView } from "./components/AlbumView";
+import { ArtistView } from "./components/ArtistView";
 import { DiscoverPanel } from "./components/DiscoverPanel";
 import { Icon, Spinner } from "./components/Icons";
+import { LyricsOverlay } from "./components/LyricsOverlay";
 import { PlayerBar } from "./components/PlayerBar";
 import { QueueDrawer } from "./components/QueueDrawer";
 import { SearchPanel } from "./components/SearchPanel";
@@ -10,6 +13,7 @@ import { DiagnosticsDialog } from "./components/DiagnosticsDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
 import { UnlockScreen } from "./components/UnlockScreen";
 import { storage } from "./lib/storage";
+import { NavProvider, type NavTarget } from "./nav/NavContext";
 import { PlayerProvider, usePlayer } from "./player/PlayerContext";
 
 type Theme = "auto" | "light" | "dark";
@@ -71,14 +75,34 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
   const player = usePlayer();
   const [query, setQuery] = useState("");
   const [queueOpen, setQueueOpen] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [tab, setTab] = useState<"search" | "discover">("search");
   const [theme, cycleTheme] = useTheme();
+  const [navStack, setNavStack] = useState<NavTarget[]>([]);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const navActions = useMemo(
+    () => ({
+      openArtist: (artist: { id?: string; name: string }) => {
+        setTab("search");
+        setNavStack((s) => [...s, { kind: "artist", id: artist.id ?? `name:${encodeURIComponent(artist.name)}`, name: artist.name }]);
+      },
+      openAlbum: (album: { id?: string; title: string; artist: string }) => {
+        setTab("search");
+        const fallbackId = `alb:${encodeURIComponent(album.artist)}|${encodeURIComponent(album.title)}`;
+        setNavStack((s) => [...s, { kind: "album", id: album.id ?? fallbackId, title: album.title, artist: album.artist }]);
+      },
+      back: () => setNavStack((s) => s.slice(0, -1)),
+    }),
+    [],
+  );
+  const activeDetail = navStack[navStack.length - 1];
 
   const search = useCallback((q: string) => {
     setQuery(q);
+    setNavStack([]);
     setTab("search");
     searchRef.current?.focus();
   }, []);
@@ -139,6 +163,9 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
         case "q":
           setQueueOpen((o) => !o);
           break;
+        case "y":
+          if (player.current?.track) setLyricsOpen((o) => !o);
+          break;
         case "/":
           e.preventDefault();
           searchRef.current?.focus();
@@ -149,6 +176,7 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
           break;
         case "Escape":
           setQueueOpen(false);
+          setLyricsOpen(false);
           break;
         default:
           return;
@@ -205,6 +233,7 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
             value={query}
             onChange={(e) => {
               setQuery(e.target.value);
+              setNavStack([]);
               setTab("search");
             }}
             onKeyDown={(e) => {
@@ -258,11 +287,25 @@ function Shell({ health, refreshHealth }: { health: HealthResponse | null; refre
       </nav>
 
       <main className={`content tab-${tab}`}>
-        <SearchPanel query={query} onQuery={search} />
-        <DiscoverPanel onSearch={search} />
+        <NavProvider value={navActions}>
+          {activeDetail?.kind === "artist" ? (
+            <ArtistView id={activeDetail.id} name={activeDetail.name} />
+          ) : activeDetail?.kind === "album" ? (
+            <AlbumView id={activeDetail.id} title={activeDetail.title} artist={activeDetail.artist} />
+          ) : (
+            <SearchPanel query={query} onQuery={search} />
+          )}
+          <DiscoverPanel onSearch={search} />
+        </NavProvider>
       </main>
 
-      <PlayerBar onToggleQueue={() => setQueueOpen((o) => !o)} queueOpen={queueOpen} />
+      <PlayerBar
+        onToggleQueue={() => setQueueOpen((o) => !o)}
+        queueOpen={queueOpen}
+        onToggleLyrics={() => setLyricsOpen((o) => !o)}
+        lyricsOpen={lyricsOpen}
+      />
+      <LyricsOverlay open={lyricsOpen} onClose={() => setLyricsOpen(false)} />
       <QueueDrawer open={queueOpen} onClose={() => setQueueOpen(false)} />
       <ShortcutsDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
       <DiagnosticsDialog open={diagOpen} onClose={() => setDiagOpen(false)} />

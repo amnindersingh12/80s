@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { downloadUrl } from "../api";
 import { formatDuration } from "../lib/format";
 import { usePlayer, type PlaybackState } from "../player/PlayerContext";
 import { upcoming } from "../player/queue";
 import { Cover } from "./Cover";
 import { Icon, Spinner } from "./Icons";
-import { QualityBadge } from "./TrackRow";
+import { QualityBadge, SaveTrackButton } from "./TrackRow";
 
 /** Human text for the upstream job stage. */
 function stageText(p: PlaybackState): string {
@@ -140,7 +139,17 @@ function Volume() {
   );
 }
 
-export function PlayerBar({ onToggleQueue, queueOpen }: { onToggleQueue: () => void; queueOpen: boolean }) {
+export function PlayerBar({
+  onToggleQueue,
+  queueOpen,
+  onToggleLyrics,
+  lyricsOpen,
+}: {
+  onToggleQueue: () => void;
+  queueOpen: boolean;
+  onToggleLyrics: () => void;
+  lyricsOpen: boolean;
+}) {
   const player = usePlayer();
   const { current, playback, queue } = player;
   const t = current?.track;
@@ -210,10 +219,18 @@ export function PlayerBar({ onToggleQueue, queueOpen }: { onToggleQueue: () => v
 
       <div className="pb-right">
         <Volume />
+        <button
+          className={`icon-btn${lyricsOpen ? " is-active" : ""}`}
+          aria-label="Lyrics"
+          aria-expanded={lyricsOpen}
+          title="Synced Lyrics (Y)"
+          onClick={onToggleLyrics}
+          disabled={!t}
+        >
+          <Icon name="lyrics" />
+        </button>
         {t ? (
-          <a className="icon-btn" href={downloadUrl(t)} download aria-label={`Download ${t.title}`} title="Download FLAC">
-            <Icon name="download" />
-          </a>
+          <SaveTrackButton track={t} />
         ) : (
           <button className="icon-btn" disabled aria-label="Download">
             <Icon name="download" />

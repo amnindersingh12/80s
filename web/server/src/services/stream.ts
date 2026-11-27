@@ -1,18 +1,25 @@
 import { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../errors.js";
+import type { CacheStore } from "../lib/cache.js";
+import { prepareFlacHeaderRewrite, type FlacTagInput } from "../lib/flacTags.js";
 import type { FetchFn } from "../lib/http.js";
+import { enrichTrackMetadata } from "../lib/metadataEnricher.js";
 import { contentDisposition, safeFilename } from "../lib/text.js";
 import { parsePublicId, type ProviderChain, type ResolvedStream } from "../providers/chain.js";
 import { MIME_BY_EXTENSION, extensionForMime, verifyLosslessStream } from "../providers/types.js";
+import { fetchLyrics } from "./lyrics.js";
 import type { PrepareTracker } from "./prepare.js";
 
 export interface StreamProxyDeps {
   chain: ProviderChain;
   tracker: PrepareTracker;
+  cache?: CacheStore;
   fetch?: FetchFn;
   /** Max wait for the CDN to send response headers. */
   headerTimeoutMs: number;
+  /** Skip external iTunes/LRCLIB lookups during download (e.g. demo/unit tests). */
+  skipEnrich?: boolean;
 }
 
 /** Upstream headers forwarded verbatim so browser seeking and caching work. */
@@ -153,11 +160,77 @@ export async function proxyAudio(
     }
   }
 
+  let headChunk = firstChunk;
+  let injectedHeader: Buffer | undefined;
+  let contentLengthOverride: number | undefined;
+  let metaTitleArtist: { artist?: string; title?: string } | undefined;
+
+  const looksLikeGenuineFlac =
+    Boolean(headChunk) &&
+    headChunk!.length >= 8 &&
+    headChunk![0] === 0x66 &&
+    headChunk![1] === 0x4c &&
+    headChunk![2] === 0x61 &&
+    headChunk![3] === 0x43 &&
+    (headChunk![4]! & 0x7f) === 0 &&
+    ((headChunk![5]! << 16) | (headChunk![6]! << 8) | headChunk![7]!) === 34;
+
+  if (mode === "download" && !rangeHeader && reader && headChunk && looksLikeGenuineFlac) {
+    const fetchFn = deps.fetch ?? fetch;
+    const rawTrack = await deps.chain.getTrack(id).catch(() => null);
+    const enriched =
+      rawTrack && deps.cache && !deps.skipEnrich
+        ? await enrichTrackMetadata(rawTrack, deps.cache, fetchFn).catch(() => rawTrack)
+        : rawTrack;
+    const tagTitle = enriched?.title ?? request.query.title?.slice(0, 200) ?? "";
+    const tagArtist = enriched?.artist ?? request.query.artist?.slice(0, 200) ?? "";
+    metaTitleArtist = { artist: tagArtist || undefined, title: tagTitle || undefined };
+
+    const [lyricsRes, coverRes] = await Promise.all([
+      !deps.skipEnrich && tagTitle && tagArtist
+        ? fetchLyrics(
+            { track: tagTitle, artist: tagArtist, album: enriched?.album, durationSec: enriched?.durationSec },
+            { fetch: fetchFn },
+          ).catch(() => null)
+        : Promise.resolve(null),
+      !deps.skipEnrich && enriched?.coverUrl
+        ? fetchCoverAsset(enriched.coverUrl, fetchFn, clientGone.signal).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    const tags: FlacTagInput = {
+      title: tagTitle,
+      artist: tagArtist,
+      ...(enriched?.album ? { album: enriched.album } : {}),
+      ...(enriched?.albumArtist ? { albumArtist: enriched.albumArtist } : {}),
+      ...(enriched?.year ? { year: enriched.year } : {}),
+      ...(enriched?.trackNumber ? { trackNumber: enriched.trackNumber } : {}),
+      ...(enriched?.isrc ? { isrc: enriched.isrc } : {}),
+      ...(lyricsRes?.syncedLyrics || lyricsRes?.plainLyrics
+        ? { lyrics: (lyricsRes.syncedLyrics ?? lyricsRes.plainLyrics) as string }
+        : {}),
+      ...(coverRes ? { coverBytes: coverRes.bytes, coverMime: coverRes.mime } : {}),
+    };
+
+    if (tags.title || tags.artist || tags.lyrics || tags.coverBytes) {
+      const plan = await prepareFlacHeaderRewrite(headChunk, reader, tags);
+      if (plan) {
+        injectedHeader = plan.header;
+        headChunk = plan.audioTail;
+        const origLen = Number(res.headers.get("content-length"));
+        if (Number.isFinite(origLen) && origLen > 0) {
+          contentLengthOverride = origLen - plan.oldHeaderLength + plan.header.length;
+        }
+      }
+    }
+  }
+
   reply.code(res.status);
   for (const name of PASSTHROUGH_HEADERS) {
     const v = res.headers.get(name);
     if (v !== null) reply.header(name, v);
   }
+  if (contentLengthOverride !== undefined) reply.header("content-length", contentLengthOverride);
   if (res.status === 206 && !res.headers.has("accept-ranges")) reply.header("accept-ranges", "bytes");
   reply
     .header("content-type", contentType)
@@ -166,7 +239,7 @@ export async function proxyAudio(
     .header("x-served-by", resolved.servedBy.name);
 
   if (mode === "download") {
-    reply.header("content-disposition", contentDisposition(await downloadName(deps.chain, id, ext, request.query)));
+    reply.header("content-disposition", contentDisposition(await downloadName(deps.chain, id, ext, metaTitleArtist ?? request.query)));
   }
 
   if (!res.body || !reader) {
@@ -175,9 +248,11 @@ export async function proxyAudio(
   }
 
   const activeReader = reader;
-  const headChunk = firstChunk;
+  const headerToSend = injectedHeader;
+  const tailToSend = headChunk;
   async function* chunkStream() {
-    if (headChunk) yield headChunk;
+    if (headerToSend && headerToSend.length > 0) yield headerToSend;
+    if (tailToSend && tailToSend.length > 0) yield tailToSend;
     try {
       while (true) {
         const { done, value } = await activeReader.read();
@@ -280,9 +355,32 @@ async function downloadName(
   ext: string,
   hints: { artist?: string; title?: string },
 ): Promise<string> {
-  const track = await chain.getTrack(id).catch(() => null);
-  const artist = track?.artist ?? hints.artist?.slice(0, 200);
-  const title = track?.title ?? hints.title?.slice(0, 200);
+  const track = hints.artist && hints.title ? null : await chain.getTrack(id).catch(() => null);
+  const artist = hints.artist?.slice(0, 200) ?? track?.artist;
+  const title = hints.title?.slice(0, 200) ?? track?.title;
   const base = artist && title ? `${artist} - ${title}` : (title ?? `track-${parsePublicId(id).rawId}`);
   return safeFilename(base, ext);
+}
+
+async function fetchCoverAsset(
+  url: string,
+  fetchFn: FetchFn,
+  parentSignal: AbortSignal,
+): Promise<{ bytes: Uint8Array; mime: string } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3_500);
+  try {
+    const res = await fetchFn(url, { signal: AbortSignal.any([parentSignal, controller.signal]) });
+    if (!res.ok) return null;
+    const len = Number(res.headers.get("content-length") ?? "0");
+    if (len > 2_000_000) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length === 0 || bytes.length > 2_000_000) return null;
+    const mime = res.headers.get("content-type")?.split(";")[0]?.trim() || "image/jpeg";
+    return { bytes, mime };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

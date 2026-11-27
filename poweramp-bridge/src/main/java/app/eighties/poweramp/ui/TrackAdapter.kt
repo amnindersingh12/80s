@@ -3,6 +3,7 @@ package app.eighties.poweramp.ui
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.view.isVisible
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -16,6 +17,10 @@ enum class DownloadState { IDLE, DOWNLOADING, DOWNLOADED }
 class TrackAdapter(
     private val onPlayClick: (LosslessTrack) -> Unit,
     private val onDownloadClick: (LosslessTrack) -> Unit,
+    private val onLyricsClick: (LosslessTrack) -> Unit,
+    private val onMoreClick: (LosslessTrack) -> Unit = {},
+    private val isOfflineDownloaded: (LosslessTrack) -> Boolean = { false },
+    private val showTrackNumbers: Boolean = false,
 ) : ListAdapter<LosslessTrack, TrackAdapter.Holder>(DIFF) {
 
     private val downloadStates = HashMap<String, DownloadState>()
@@ -33,20 +38,35 @@ class TrackAdapter(
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val item = getItem(position)
-        holder.bind(item, downloadStates[item.id] ?: DownloadState.IDLE)
+        val offline = isOfflineDownloaded(item)
+        val state = downloadStates[item.id] ?: if (offline) DownloadState.DOWNLOADED else DownloadState.IDLE
+        holder.bind(item, position, state, offline)
     }
 
     inner class Holder(private val b: ItemTrackBinding) : RecyclerView.ViewHolder(b.root) {
-        fun bind(track: LosslessTrack, state: DownloadState) {
+        fun bind(track: LosslessTrack, position: Int, state: DownloadState, offline: Boolean) {
+            if (showTrackNumbers) {
+                b.trackIndex.isVisible = true
+                b.trackIndex.text = "${track.trackNumber ?: (position + 1)}"
+                b.trackCover.isVisible = false
+            } else {
+                b.trackIndex.isVisible = false
+                b.trackCover.isVisible = true
+                CoverLoader.load(b.trackCover, track.artworkUrl, R.drawable.ic_music_note)
+            }
+
             b.trackTitle.text = track.title
             val yearSuffix = track.year?.let { " · $it" }.orEmpty()
-            val albumPart = track.album?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+            val albumPart = if (showTrackNumbers) "" else track.album?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
             b.trackSubtitle.text = "${track.artist}$albumPart$yearSuffix"
             b.trackBadge.text = track.badgeText
+            b.downloadedBadge.isVisible = offline || state == DownloadState.DOWNLOADED
             val secs = (track.effectiveDurationMs / 1000L).toInt()
             b.trackDuration.text = String.format(Locale.US, "%d:%02d", secs / 60, secs % 60)
 
             b.root.setOnClickListener { onPlayClick(track) }
+            b.btnLyrics.setOnClickListener { onLyricsClick(track) }
+            b.btnMore.setOnClickListener { onMoreClick(track) }
             b.btnDownload.setOnClickListener {
                 if (state == DownloadState.IDLE) onDownloadClick(track)
             }

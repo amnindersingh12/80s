@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import app.eighties.poweramp.data.BridgeAppGraph
+import app.eighties.poweramp.data.BridgeDatabase
 import app.eighties.poweramp.data.LosslessTrack
 
 object PowerampHelper {
@@ -108,5 +110,51 @@ object PowerampHelper {
         }.onFailure {
             Log.w(TAG, "triggerRescan failed: ${it.message}")
         }
+    }
+
+    fun sendCommand(context: Context, command: Int) {
+        val pkg = resolvePowerampPackage(context)
+        val intent = Intent(PowerampContract.ACTION_API_COMMAND).apply {
+            component = ComponentName(pkg, PowerampContract.API_RECEIVER_NAME)
+            putExtra(PowerampContract.EXTRA_COMMAND, command)
+            putExtra(PowerampContract.EXTRA_PACKAGE, context.packageName)
+        }
+        runCatching { context.sendBroadcast(intent) }
+    }
+
+    fun seekToMs(context: Context, positionMs: Long) {
+        val pkg = resolvePowerampPackage(context)
+        val sec = (positionMs / 1000L).toInt().coerceAtLeast(0)
+        val intent = Intent(PowerampContract.ACTION_API_COMMAND).apply {
+            component = ComponentName(pkg, PowerampContract.API_RECEIVER_NAME)
+            putExtra(PowerampContract.EXTRA_COMMAND, PowerampContract.CMD_SEEK)
+            putExtra(PowerampContract.EXTRA_POSITION, sec)
+            putExtra(PowerampContract.EXTRA_PACKAGE, context.packageName)
+        }
+        runCatching { context.sendBroadcast(intent) }
+    }
+
+    fun playLocalUriInPoweramp(context: Context, uri: Uri, track: LosslessTrack): Boolean {
+        val pkg = resolvePowerampPackage(context)
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, track.mimeType)
+            setPackage(pkg)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (runCatching { context.startActivity(viewIntent); true }.getOrDefault(false)) return true
+        return playUrlInPoweramp(context, uri.toString(), track)
+    }
+
+    fun queueTracksInBridge(context: Context, tracks: List<LosslessTrack>, playNext: Boolean = false) {
+        if (tracks.isEmpty()) return
+        BridgeAppGraph.db(context).addToQueue(tracks, playNext = playNext)
+        triggerRescan(context, BridgeDatabase.FOLDER_QUEUE, fromUi = true)
+    }
+
+    fun openPowerampApp(context: Context): Boolean {
+        val pkg = resolvePowerampPackage(context)
+        val launch = context.packageManager.getLaunchIntentForPackage(pkg) ?: return false
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching { context.startActivity(launch); true }.getOrDefault(false)
     }
 }

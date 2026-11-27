@@ -1,11 +1,12 @@
 import type { KeyboardEvent, ReactNode } from "react";
 import type { Track } from "../../../shared/api";
-import { downloadUrl } from "../api";
+import { startFlacDownload, useTrackDownloadState } from "../lib/download";
 import { formatDuration, isHiRes, qualityLabel } from "../lib/format";
+import { useNav, type NavActions } from "../nav/NavContext";
 import { usePlayer } from "../player/PlayerContext";
 import type { QueueTrack } from "../player/queue";
 import { Cover } from "./Cover";
-import { Icon } from "./Icons";
+import { Icon, Spinner } from "./Icons";
 import { TrackMenu, type MenuAction } from "./TrackMenu";
 
 export function QualityBadge({ track, compact = false }: { track: Pick<Track, "format" | "lossless" | "bitDepth" | "sampleRate" | "bitrateKbps">; compact?: boolean }) {
@@ -17,14 +18,58 @@ export function QualityBadge({ track, compact = false }: { track: Pick<Track, "f
   );
 }
 
-export function trackActions(player: ReturnType<typeof usePlayer>, track: QueueTrack): MenuAction[] {
-  return [
+export function SaveTrackButton({
+  track,
+  label,
+  className = "icon-btn",
+}: {
+  track: Pick<Track, "id" | "artist" | "title" | "format">;
+  label?: string;
+  className?: string;
+}) {
+  const dl = useTrackDownloadState(track.id);
+  const saving = dl?.state === "downloading";
+  const done = dl?.state === "done";
+  const err = dl?.state === "error";
+  const title = saving ? `Saving FLAC${dl.pct ? ` (${dl.pct}%)` : "…"}` : done ? "FLAC saved" : err ? "Save failed — click to retry" : "Save tagged FLAC";
+
+  return (
+    <button
+      type="button"
+      className={`${className}${done ? " is-saved" : ""}${err ? " is-error" : ""}`}
+      aria-label={title}
+      title={title}
+      disabled={saving}
+      onClick={() => void startFlacDownload(track)}
+    >
+      {saving ? (
+        <span className="save-progress">
+          <Spinner size={14} />
+          {dl.pct !== undefined && dl.pct > 0 ? <span className="save-pct">{dl.pct}%</span> : null}
+        </span>
+      ) : (
+        <Icon name={done ? "check" : "download"} size={18} />
+      )}
+      {label ? <span>{saving && dl.pct ? `Saving ${dl.pct}%` : done ? "Saved" : label}</span> : null}
+    </button>
+  );
+}
+
+export function trackActions(player: ReturnType<typeof usePlayer>, track: QueueTrack, nav?: NavActions): MenuAction[] {
+  const actions: MenuAction[] = [
     { label: "Play now", icon: "play", run: () => player.play(track) },
     { label: "Play next", icon: "playNext", run: () => player.playNext(track) },
     { label: "Add to queue", icon: "addQueue", run: () => player.enqueue(track) },
     { label: "Start track radio", icon: "radio", run: () => void player.startRadio(track) },
-    { label: "Download FLAC", icon: "download", run: () => undefined, href: downloadUrl(track) },
+    { label: "Save tagged FLAC", icon: "download", run: () => void startFlacDownload(track) },
   ];
+  if (nav) {
+    actions.push({ label: "Go to Artist", icon: "person", run: () => nav.openArtist({ id: track.artistId, name: track.artist }) });
+    if (track.album) {
+      actions.push({ label: "Go to Album", icon: "album", run: () => nav.openAlbum({ id: track.albumId, title: track.album!, artist: track.artist }) });
+    }
+  }
+  return actions;
 }
 
 /**
@@ -33,6 +78,7 @@ export function trackActions(player: ReturnType<typeof usePlayer>, track: QueueT
  */
 export function TrackRow({ track, index, extra }: { track: QueueTrack; index?: number; extra?: ReactNode }) {
   const player = usePlayer();
+  const nav = useNav();
   const isCurrent = player.current?.track.id === track.id;
   const playing = isCurrent && player.playback.status === "playing";
 
@@ -60,7 +106,7 @@ export function TrackRow({ track, index, extra }: { track: QueueTrack; index?: n
       onDoubleClick={() => player.play(track)}
     >
       <div className="track-cover-wrap">
-        <Cover src={track.coverUrl} title={track.title} size={44} />
+        <Cover src={track.coverUrl} title={track.title} size={56} />
         <button
           className={`cover-play${playing ? " visible" : ""}`}
           aria-label={playing ? `Pause ${track.title}` : `Play ${track.title}`}
@@ -76,8 +122,32 @@ export function TrackRow({ track, index, extra }: { track: QueueTrack; index?: n
           <span className="ellipsis">{track.title}</span>
         </div>
         <div className="track-sub ellipsis">
-          {track.artist}
-          {track.album ? <span className="dim"> · {track.album}</span> : null}
+          <button
+            type="button"
+            className="link-inline"
+            onClick={(e) => {
+              e.stopPropagation();
+              nav.openArtist({ id: track.artistId, name: track.artist });
+            }}
+          >
+            {track.artist}
+          </button>
+          {track.album ? (
+            <>
+              <span className="dim"> · </span>
+              <button
+                type="button"
+                className="link-inline dim"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  nav.openAlbum({ id: track.albumId, title: track.album!, artist: track.artist });
+                }}
+              >
+                {track.album}
+              </button>
+            </>
+          ) : null}
+          {track.year ? <span className="dim"> ({track.year})</span> : null}
           {track.reason ? <span className="dim"> · {track.reason}</span> : null}
         </div>
       </div>
@@ -85,10 +155,14 @@ export function TrackRow({ track, index, extra }: { track: QueueTrack; index?: n
       <QualityBadge track={track} compact />
       <span className="track-duration">{formatDuration(track.durationSec)}</span>
       <div className="track-actions">
+        <button className="icon-btn hide-sm" aria-label={`Play ${track.title} next`} title="Play next" onClick={() => player.playNext(track)}>
+          <Icon name="playNext" />
+        </button>
         <button className="icon-btn hide-sm" aria-label={`Add ${track.title} to queue`} title="Add to queue" onClick={() => player.enqueue(track)}>
           <Icon name="addQueue" />
         </button>
-        <TrackMenu label={`More actions for ${track.title}`} actions={trackActions(player, track)} />
+        <SaveTrackButton track={track} className="icon-btn hide-sm" />
+        <TrackMenu label={`More actions for ${track.title}`} actions={trackActions(player, track, nav)} />
       </div>
     </li>
   );

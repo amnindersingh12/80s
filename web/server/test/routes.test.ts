@@ -202,23 +202,29 @@ describe("static client serving", () => {
     const seedTrackHome = await a.inject("/api/home?seedArtist=Radiohead&seedTrack=Karma+Police");
     expect(seedTrackHome.statusCode).toBe(200);
     expect(seedTrackHome.json().seed).toMatchObject({ type: "track", artist: "Radiohead", title: "Karma Police" });
-    expect(resolved.json().signedStreamUrl).toMatch(/^\/api\/stream\/demo%3Ademo-12/);
+    expect(resolved.json().signedStreamUrl).toMatch(/^https?:\/\/[^/]+\/api\/stream\/demo%3Ademo-12/);
   });
 
   it("allows GET/HEAD /api/stream/:id via signed ?st= token while keeping other endpoints gated", async () => {
-    const a = await make({ APP_ACCESS_KEY: "correct horse battery staple" });
+    const a = await make({ APP_ACCESS_KEY: "correct horse battery staple", TRUST_PROXY: "true" });
     const session = await a.inject({ method: "POST", url: "/api/session", payload: { key: "correct horse battery staple" } });
     const cookie = String(session.headers["set-cookie"]).split(";")[0]!;
 
-    const prep = await a.inject({ method: "POST", url: "/api/tracks/demo:demo-01/prepare", headers: { cookie } });
+    const prep = await a.inject({
+      method: "POST",
+      url: "/api/tracks/demo:demo-01/prepare",
+      headers: { cookie, host: "felicity-80s.example", "x-forwarded-proto": "https" },
+    });
     expect(prep.statusCode).toBe(200);
     const signedUrl = prep.json().signedStreamUrl as string;
-    expect(signedUrl).toContain("?st=");
+    expect(signedUrl).toMatch(/^https:\/\/felicity-80s\.example\/api\/stream\/demo%3Ademo-01\?st=/);
 
-    const headRes = await a.inject({ method: "HEAD", url: signedUrl });
+    const parsedSigned = new URL(signedUrl);
+    const signedPath = `${parsedSigned.pathname}${parsedSigned.search}`;
+    const headRes = await a.inject({ method: "HEAD", url: signedPath });
     expect(headRes.statusCode).toBe(200);
 
-    const streamRes = await a.inject({ url: signedUrl, headers: { range: "bytes=0-43" } });
+    const streamRes = await a.inject({ url: signedPath, headers: { range: "bytes=0-43" } });
     expect(streamRes.statusCode).toBe(206);
     expect(streamRes.rawPayload.subarray(0, 4).toString()).toBe("RIFF");
 
@@ -228,5 +234,40 @@ describe("static client serving", () => {
     expect((await a.inject(`/api/search?q=karma&st=${token}`)).statusCode).toBe(401);
     expect((await a.inject(`/api/download/demo:demo-01?st=${token}`)).statusCode).toBe(401);
     expect((await a.inject(`/api/stream/demo:demo-01?st=1.bad`)).statusCode).toBe(401);
+  });
+
+  it("returns structured search, artist details, album details, and nowPlaying-aware home", async () => {
+    const a = await make();
+
+    const searchAll = await a.inject("/api/search?q=moose&type=all");
+    expect(searchAll.statusCode).toBe(200);
+    const sBody = searchAll.json();
+    expect(sBody.topResult).toBeDefined();
+    expect(sBody.tracks.length).toBeGreaterThan(0);
+    expect(sBody.artists.length).toBeGreaterThan(0);
+    expect(sBody.albums.length).toBeGreaterThan(0);
+
+    const searchArtistsOnly = await a.inject("/api/search?q=moose&type=artists");
+    expect(searchArtistsOnly.statusCode).toBe(200);
+    expect(searchArtistsOnly.json().tracks).toEqual([]);
+    expect(searchArtistsOnly.json().artists.length).toBeGreaterThan(0);
+
+    const artistRes = await a.inject(`/api/artists/${encodeURIComponent(sBody.artists[0].id)}?name=${encodeURIComponent(sBody.artists[0].name)}`);
+    expect(artistRes.statusCode).toBe(200);
+    expect(artistRes.json().name).toBe("Sidhu Moose Wala");
+    expect(artistRes.json().topTracks.length).toBeGreaterThan(0);
+    expect(artistRes.json().albums.length).toBeGreaterThan(0);
+
+    const albumRes = await a.inject(`/api/albums/${encodeURIComponent(sBody.albums[0].id)}`);
+    expect(albumRes.statusCode).toBe(200);
+    expect(albumRes.json().title).toBe(sBody.albums[0].title);
+    expect(albumRes.json().trackCount).toBeGreaterThan(0);
+    expect(albumRes.json().totalDurationMs).toBeGreaterThan(0);
+
+    const home = await a.inject("/api/home?genre=pop&nowPlayingArtist=Radiohead&nowPlayingTrack=Karma%20Police");
+    expect(home.statusCode).toBe(200);
+    expect(home.json().nowPlaying).toEqual({ artist: "Radiohead", track: "Karma Police" });
+    expect(home.json().becauseYouPlayed?.label).toContain("Karma Police");
+    expect(Array.isArray(home.json().albums)).toBe(true);
   });
 });

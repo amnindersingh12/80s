@@ -10,6 +10,7 @@ import android.provider.MediaStore
 import androidx.documentfile.provider.DocumentFile
 import app.eighties.poweramp.data.BridgeApiClient
 import app.eighties.poweramp.data.BridgeApiException
+import app.eighties.poweramp.data.BridgeAppGraph
 import app.eighties.poweramp.data.BridgePrefs
 import app.eighties.poweramp.data.LosslessTrack
 import app.eighties.poweramp.poweramp.PowerampHelper
@@ -39,6 +40,7 @@ class FlacDownloadManager(
                     } ?: throw BridgeApiException("Failed to open output stream")
                 }
                 PowerampHelper.triggerRescan(context, null, fromUi = true)
+                BridgeAppGraph.localLibrary(context).markDownloaded(track.artist, track.title, doc.uri)
                 return@withContext targetName
             }
         }
@@ -68,6 +70,7 @@ class FlacDownloadManager(
                 values.clear()
                 values.put(MediaStore.Audio.Media.IS_PENDING, 0)
                 resolver.update(itemUri, values, null, null)
+                BridgeAppGraph.localLibrary(context).markDownloaded(track.artist, track.title, itemUri)
                 return@withContext "$relPath/${track.displayFilename}"
             } catch (t: Throwable) {
                 resolver.delete(itemUri, null, null)
@@ -83,6 +86,7 @@ class FlacDownloadManager(
             FileOutputStream(target).use { out -> stream.copyTo(out) }
         }
         MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), arrayOf(track.mimeType), null)
+        BridgeAppGraph.localLibrary(context).markDownloaded(track.artist, track.title, Uri.fromFile(target))
         target.absolutePath
     }
 }

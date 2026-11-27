@@ -1,12 +1,17 @@
 import type {
+  AlbumDetailResponse,
+  ArtistDetailResponse,
   DoctorResponse,
   ErrorCode,
   HealthResponse,
+  HomeResponse,
+  LyricsResponse,
   PrepareStatus,
   RadioRequest,
   RadioResponse,
   RecommendationSeed,
   RecommendationsResponse,
+  SearchFilterType,
   SearchResponse,
   Track,
 } from "../../shared/api";
@@ -83,7 +88,34 @@ export const api = {
   doctor: (q?: string, signal?: AbortSignal) => request<DoctorResponse>(`/api/doctor${q ? `?q=${encodeURIComponent(q)}` : ""}`, { signal }),
   unlock: (key: string) => request<{ ok: boolean }>("/api/session", { method: "POST", body: JSON.stringify({ key }) }),
   lock: () => request<{ ok: boolean }>("/api/session", { method: "DELETE" }),
-  search: (q: string, signal?: AbortSignal) => request<SearchResponse>(`/api/search?q=${enc(q)}&limit=30`, { signal }),
+  search: (q: string, type: SearchFilterType = "all", signal?: AbortSignal) =>
+    request<SearchResponse>(`/api/search?q=${enc(q)}&type=${enc(type)}&limit=30`, { signal }),
+  artist: (id: string, name?: string, signal?: AbortSignal) => {
+    const p = new URLSearchParams();
+    if (name) p.set("name", name);
+    const qs = p.toString();
+    return request<ArtistDetailResponse>(`/api/artists/${enc(id)}${qs ? `?${qs}` : ""}`, { signal });
+  },
+  album: (id: string, opts?: { title?: string; artist?: string }, signal?: AbortSignal) => {
+    const p = new URLSearchParams();
+    if (opts?.title) p.set("title", opts.title);
+    if (opts?.artist) p.set("artist", opts.artist);
+    const qs = p.toString();
+    return request<AlbumDetailResponse>(`/api/albums/${enc(id)}${qs ? `?${qs}` : ""}`, { signal });
+  },
+  home: (
+    opts: { genre?: string; nowPlayingArtist?: string; nowPlayingTrack?: string; seedArtist?: string; seedTrack?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.genre) p.set("genre", opts.genre);
+    if (opts.nowPlayingArtist) p.set("nowPlayingArtist", opts.nowPlayingArtist);
+    if (opts.nowPlayingTrack) p.set("nowPlayingTrack", opts.nowPlayingTrack);
+    if (opts.seedArtist) p.set("seedArtist", opts.seedArtist);
+    if (opts.seedTrack) p.set("seedTrack", opts.seedTrack);
+    if (opts.limit) p.set("limit", String(opts.limit));
+    return request<HomeResponse>(`/api/home?${p.toString()}`, { signal });
+  },
   /** Starts (or joins) the upstream job; resolves with the status even for 5xx job errors. */
   prepare: (id: string) => request<PrepareStatus>(`/api/tracks/${enc(id)}/prepare`, { method: "POST" }, isStatus),
   prepareStatus: (id: string) => request<PrepareStatus>(`/api/tracks/${enc(id)}/prepare`, {}, isStatus),
@@ -91,6 +123,12 @@ export const api = {
     request<RecommendationsResponse>(`/api/recommendations?${seedQuery(seed, 24)}`, { signal }),
   radio: (body: RadioRequest, signal?: AbortSignal) =>
     request<RadioResponse>("/api/radio", { method: "POST", body: JSON.stringify(body), signal }),
+  lyrics: (q: { track: string; artist: string; album?: string; duration?: number }, signal?: AbortSignal) => {
+    const p = new URLSearchParams({ track: q.track, artist: q.artist });
+    if (q.album) p.set("album", q.album);
+    if (q.duration) p.set("duration", String(Math.round(q.duration)));
+    return request<LyricsResponse>(`/api/lyrics?${p.toString()}`, { signal });
+  },
   /** Reads the JSON error behind a failed <audio> load (the element itself can't). */
   probeStream: async (id: string): Promise<ApiError | null> => {
     try {

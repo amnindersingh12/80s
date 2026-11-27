@@ -34,8 +34,16 @@ object PowerampContract {
     // Playback / Track Changed / Scanner intents
     const val ACTION_API_COMMAND = "com.maxmpz.audioplayer.API_COMMAND"
     const val EXTRA_COMMAND = "cmd"
+    const val EXTRA_POSITION = "pos"
+    const val CMD_TOGGLE_PLAY_PAUSE = 1
+    const val CMD_NEXT = 4
+    const val CMD_PREVIOUS = 5
+    const val CMD_SEEK = 10
     const val CMD_OPEN_TO_PLAY = 20
     const val EXTRA_PACKAGE = "pak"
+
+    const val ACTION_STATUS_CHANGED = "com.maxmpz.audioplayer.STATUS_CHANGED"
+    const val EXTRA_PAUSED = "paused"
 
     const val ACTION_TRACK_CHANGED = "com.maxmpz.audioplayer.TRACK_CHANGED"
     const val ACTION_TRACK_CHANGED_EXPLICIT = "com.maxmpz.audioplayer.TRACK_CHANGED_EXPLICIT"

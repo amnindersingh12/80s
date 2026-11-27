@@ -17,4 +17,6 @@
     <string name="testing_connection">Testing server connection…</string>
     <string name="refreshing_folders">Syncing virtual folders &amp; scanning Poweramp…</string>
     <string name="folders_refreshed">Synced %1$d lossless tracks to Poweramp folders.</string>
+    <string name="lyrics_empty">No lyrics available for this track yet.</string>
+    <string name="lyrics_instrumental">Instrumental track — no lyrics.</string>
 </resources>

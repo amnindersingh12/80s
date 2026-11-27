@@ -244,7 +244,7 @@ class PowerampTrackProvider : DocumentsProvider() {
             row.add(MediaStore.MediaColumns.TITLE, t.title)
             row.add(MediaStore.Audio.AudioColumns.ARTIST, t.artist)
             row.add(MediaStore.Audio.AudioColumns.ALBUM, t.album ?: t.artist)
-            row.add(PowerampContract.COLUMN_ALBUM_ARTIST, t.artist)
+            row.add(PowerampContract.COLUMN_ALBUM_ARTIST, t.albumArtist ?: t.artist)
             t.year?.let { row.add(MediaStore.Audio.AudioColumns.YEAR, it) }
             t.trackNumber?.let { row.add(MediaStore.Audio.AudioColumns.TRACK, it) }
             row.add(PowerampContract.COLUMN_GENRE, t.genre ?: "Hi-Res Lossless")

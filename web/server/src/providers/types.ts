@@ -1,9 +1,42 @@
-import type { Track } from "../../../shared/api.js";
+import type { AlbumSummary, ArtistSummary, SearchFilterType, SimilarArtist, Track } from "../../../shared/api.js";
 
 export type { Track };
 
 /** Track as produced by a concrete provider: `id` is the provider's own id. */
 export type ProviderTrack = Track;
+
+export interface CatalogSearchResult {
+  tracks: ProviderTrack[];
+  artists: ArtistSummary[];
+  albums: AlbumSummary[];
+}
+
+export interface ProviderArtistDetail {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  bio?: string;
+  genres: string[];
+  topTracks: ProviderTrack[];
+  albums: AlbumSummary[];
+  similarArtists?: SimilarArtist[];
+}
+
+export interface ProviderAlbumDetail {
+  id: string;
+  title: string;
+  artist: string;
+  artistId?: string;
+  coverUrl?: string;
+  year?: number;
+  trackCount: number;
+  totalDurationMs: number;
+  codec: "FLAC" | "ALAC";
+  bitDepth?: number;
+  sampleRate?: number;
+  qualityTier: "HI-RES LOSSLESS" | "LOSSLESS";
+  tracks: ProviderTrack[];
+}
 
 export interface JobProgress {
   stage?: string;
@@ -37,6 +70,7 @@ export interface StreamSource {
 
 export interface SearchOptions {
   limit?: number;
+  type?: SearchFilterType;
   signal?: AbortSignal;
 }
 
@@ -48,6 +82,9 @@ export interface AudioProvider {
   readonly name: string;
   readonly kind: string;
   search(query: string, options?: SearchOptions): Promise<ProviderTrack[]>;
+  searchCatalog?(query: string, options?: SearchOptions): Promise<CatalogSearchResult>;
+  getArtist?(id: string): Promise<ProviderArtistDetail | null>;
+  getAlbum?(id: string): Promise<ProviderAlbumDetail | null>;
   /** Resolves `null` when the track does not exist. */
   getTrackMetadata(id: string): Promise<ProviderTrack | null>;
   getStreamUrl(id: string, options?: StreamOptions): Promise<StreamSource>;
@@ -101,8 +138,9 @@ export function inferLossless(format?: string, quality?: string, defaultLossless
 }
 
 const LOSSY_MIME_RE = /\b(mpeg|mp3|aac|ogg|opus|vorbis|webm|mp4a)\b/i;
+const INVALID_MEDIA_MIME_RE = /^(text\/|application\/(?:json|xml|xhtml|javascript|html))/i;
 
-/** Rejects explicit lossy MIME types or known lossy magic headers (`ID3`, MP3 sync, `OggS`, ADTS, `mp4a` without `alac`). */
+/** Rejects explicit lossy MIME types, non-audio error pages, or non-lossless magic headers (`fLaC`, ALAC, or WAV). */
 export function verifyLosslessStream(
   mime: string | null | undefined,
   headBytes?: Uint8Array,
@@ -111,26 +149,41 @@ export function verifyLosslessStream(
   if (m && LOSSY_MIME_RE.test(m)) {
     return { ok: false, reason: `Lossy content-type "${m}" rejected (FLAC/ALAC only)` };
   }
-  if (headBytes && headBytes.length >= 4) {
+  if (m && /^application\/(?:json|xml|xhtml|javascript)|^text\/html/i.test(m)) {
+    return { ok: false, reason: `Non-audio content-type "${m}" rejected` };
+  }
+  if (headBytes !== undefined) {
+    if (headBytes.length < 4) {
+      return { ok: false, reason: "Empty or truncated audio stream rejected" };
+    }
     // fLaC
     if (headBytes[0] === 0x66 && headBytes[1] === 0x4c && headBytes[2] === 0x61 && headBytes[3] === 0x43) {
       return { ok: true, codec: "FLAC", mimeType: "audio/flac", extension: "flac" };
     }
-    // ID3 or MPEG ADTS/MP3 frame sync
-    const isId3 = headBytes[0] === 0x49 && headBytes[1] === 0x44 && headBytes[2] === 0x33;
-    const isOgg = headBytes[0] === 0x4f && headBytes[1] === 0x67 && headBytes[2] === 0x67 && headBytes[3] === 0x53;
-    const isMp3OrAdts = headBytes[0] === 0xff && (headBytes[1]! & 0xe0) === 0xe0;
-    if (isId3 || isOgg || isMp3OrAdts) {
-      return { ok: false, reason: "Lossy audio stream header rejected (FLAC/ALAC only)" };
+    // RIFF....WAVE (uncompressed PCM WAV, e.g. demo clips)
+    if (
+      headBytes.length >= 12 &&
+      headBytes[0] === 0x52 &&
+      headBytes[1] === 0x49 &&
+      headBytes[2] === 0x46 &&
+      headBytes[3] === 0x46 &&
+      headBytes[8] === 0x57 &&
+      headBytes[9] === 0x41 &&
+      headBytes[10] === 0x56 &&
+      headBytes[11] === 0x45
+    ) {
+      return { ok: true, codec: "FLAC", mimeType: "audio/wav", extension: "wav" };
     }
     // ISO BMFF (`ftyp` at offset 4)
     if (headBytes.length >= 8 && headBytes[4] === 0x66 && headBytes[5] === 0x74 && headBytes[6] === 0x79 && headBytes[7] === 0x70) {
       const ascii = Buffer.from(headBytes).toString("latin1");
       if (ascii.includes("alac")) return { ok: true, codec: "ALAC", mimeType: "audio/mp4", extension: "m4a" };
-      if (ascii.includes("mp4a") || ascii.includes("M4A ")) {
-        return { ok: false, reason: "Lossy M4A/AAC container rejected (FLAC/ALAC only)" };
-      }
+      return { ok: false, reason: "Lossy or non-ALAC MP4 container rejected (FLAC/ALAC only)" };
     }
+    return { ok: false, reason: "Unrecognized or lossy audio stream header rejected (FLAC/ALAC only)" };
+  }
+  if (m && INVALID_MEDIA_MIME_RE.test(m)) {
+    return { ok: false, reason: `Non-audio content-type "${m}" rejected` };
   }
   if (m.includes("mp4") || m.includes("alac")) return { ok: true, codec: "ALAC", mimeType: "audio/mp4", extension: "m4a" };
   return { ok: true, codec: "FLAC", mimeType: "audio/flac", extension: "flac" };

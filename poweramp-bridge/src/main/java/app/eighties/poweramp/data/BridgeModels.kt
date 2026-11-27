@@ -7,7 +7,10 @@ data class LosslessTrack(
     val provider: String,
     val title: String,
     val artist: String,
+    val artistId: String? = null,
+    val albumArtist: String? = null,
     val album: String? = null,
+    val albumId: String? = null,
     val year: Int? = null,
     val trackNumber: Int? = null,
     val durationSec: Int? = null,
@@ -61,6 +64,75 @@ data class LosslessTrack(
             "$RESOLVE_PREFIX${artist.trim()}|${title.trim()}|${album?.trim().orEmpty()}"
     }
 }
+
+data class ArtistSummary(
+    val id: String,
+    val name: String,
+    val imageUrl: String? = null,
+    val genres: List<String> = emptyList(),
+)
+
+data class AlbumSummary(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val artistId: String? = null,
+    val coverUrl: String? = null,
+    val year: Int? = null,
+    val trackCount: Int? = null,
+    val qualityTier: String = "LOSSLESS",
+)
+
+sealed class SearchTopResult {
+    data class TrackHit(val track: LosslessTrack) : SearchTopResult()
+    data class ArtistHit(val artist: ArtistSummary) : SearchTopResult()
+    data class AlbumHit(val album: AlbumSummary) : SearchTopResult()
+}
+
+data class SearchCatalogResult(
+    val query: String,
+    val topResult: SearchTopResult?,
+    val tracks: List<LosslessTrack>,
+    val artists: List<ArtistSummary>,
+    val albums: List<AlbumSummary>,
+)
+
+data class ArtistDetail(
+    val id: String,
+    val name: String,
+    val imageUrl: String? = null,
+    val bio: String? = null,
+    val genres: List<String> = emptyList(),
+    val topTracks: List<LosslessTrack> = emptyList(),
+    val albums: List<AlbumSummary> = emptyList(),
+    val similarArtists: List<ArtistSummary> = emptyList(),
+)
+
+data class AlbumDetail(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val artistId: String? = null,
+    val coverUrl: String? = null,
+    val year: Int? = null,
+    val trackCount: Int = 0,
+    val totalDurationMs: Long = 0L,
+    val codec: String = "FLAC",
+    val bitDepth: Int? = null,
+    val sampleRate: Int? = null,
+    val qualityTier: String = "LOSSLESS",
+    val tracks: List<LosslessTrack> = emptyList(),
+)
+
+data class HomeFeed(
+    val genre: String,
+    val featuredTrack: LosslessTrack? = null,
+    val tracks: List<LosslessTrack> = emptyList(),
+    val becauseYouPlayedLabel: String? = null,
+    val becauseYouPlayed: List<LosslessTrack> = emptyList(),
+    val albums: List<AlbumSummary> = emptyList(),
+    val artists: List<ArtistSummary> = emptyList(),
+)
 
 data class PreparedStream(
     val track: LosslessTrack,

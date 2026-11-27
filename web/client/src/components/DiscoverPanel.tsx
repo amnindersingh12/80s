@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RecommendationSeed, RecommendationSource, RecommendationsResponse, RecommendedTrack } from "../../../shared/api";
+import type { HomeResponse, RecommendationSeed, RecommendationSource, RecommendedTrack } from "../../../shared/api";
 import { api, describeError } from "../api";
 import { formatDuration } from "../lib/format";
 import { storage } from "../lib/storage";
+import { useNav } from "../nav/NavContext";
 import { usePlayer } from "../player/PlayerContext";
 import type { QueueTrack } from "../player/queue";
 import { Cover } from "./Cover";
 import { Icon, Spinner } from "./Icons";
-import { TrackListSkeleton, TrackRow } from "./TrackRow";
+import { QualityBadge, SaveTrackButton, TrackListSkeleton, TrackRow } from "./TrackRow";
 
 export const GENRES = [
   "Mixed",
@@ -31,7 +32,7 @@ const SEED_KEY = "80s.discoverSeed.v1";
 type Load =
   | { kind: "idle" }
   | { kind: "loading"; key: string }
-  | { kind: "ready"; key: string; data: RecommendationsResponse }
+  | { kind: "ready"; key: string; data: HomeResponse }
   | { kind: "error"; key: string; message: string };
 
 function seedKey(s: RecommendationSeed): string {
@@ -45,19 +46,20 @@ function toQueueTrack(r: RecommendedTrack): QueueTrack | undefined {
 
 export function DiscoverPanel({ onSearch }: { onSearch: (q: string) => void }) {
   const player = usePlayer();
+  const nav = useNav();
   const current = player.current?.track;
   const [follow, setFollow] = useState(() => storage.get(`${SEED_KEY}.follow`, true));
   const [manual, setManual] = useState<RecommendationSeed>(() => storage.get(SEED_KEY, { type: "tag", tag: "mixed" }));
   const [load, setLoad] = useState<Load>({ kind: "idle" });
   const [attempt, setAttempt] = useState(0);
-  const cache = useRef(new Map<string, RecommendationsResponse>());
+  const cache = useRef(new Map<string, HomeResponse>());
 
   const seed: RecommendationSeed = useMemo(
     () => (follow && current ? { type: "track", trackId: current.id, artist: current.artist, title: current.title } : manual),
     // Keyed on the track id: artist/title never change for a given id.
     [follow, current?.id, manual],
   );
-  const key = seedKey(seed);
+  const key = `${seedKey(seed)}|${current?.id ?? ""}`;
 
   useEffect(() => {
     storage.set(SEED_KEY, manual);
@@ -77,7 +79,20 @@ export function DiscoverPanel({ onSearch }: { onSearch: (q: string) => void }) {
     const timer = window.setTimeout(async () => {
       setLoad({ kind: "loading", key });
       try {
-        const data = await api.recommendations(seed, controller.signal);
+        const data =
+          seed.type === "tag"
+            ? await api.home(
+                {
+                  genre: seed.tag ?? "mixed",
+                  ...(current ? { nowPlayingArtist: current.artist, nowPlayingTrack: current.title } : {}),
+                  limit: 24,
+                },
+                controller.signal,
+              )
+            : ({
+                genre: seed.tag ?? "mixed",
+                ...(await api.recommendations(seed, controller.signal)),
+              } satisfies HomeResponse);
         cache.current.set(key, data);
         setLoad({ kind: "ready", key, data });
       } catch (err) {
@@ -94,10 +109,6 @@ export function DiscoverPanel({ onSearch }: { onSearch: (q: string) => void }) {
   const pickTag = (tag: string) => {
     setFollow(false);
     setManual({ type: "tag", tag: tag.toLowerCase() });
-  };
-  const pickArtist = (artist: string) => {
-    setFollow(false);
-    setManual({ type: "artist", artist });
   };
 
   const data = load.kind === "ready" ? load.data : undefined;
@@ -162,13 +173,54 @@ export function DiscoverPanel({ onSearch }: { onSearch: (q: string) => void }) {
 
       {data ? (
         <>
+          {data.featuredTrack ? (
+            <div className="search-hero" style={{ margin: "10px 6px 14px" }}>
+              <Cover src={data.featuredTrack.coverUrl} title={data.featuredTrack.title} size={90} />
+              <div className="search-hero-body">
+                <div className="search-hero-badges">
+                  <QualityBadge track={data.featuredTrack} />
+                  <span className="pill">Featured</span>
+                </div>
+                <div className="search-hero-title ellipsis">{data.featuredTrack.title}</div>
+                <div className="search-hero-sub ellipsis">{data.featuredTrack.artist}</div>
+                <div className="search-hero-actions">
+                  <button className="btn btn-primary btn-small" onClick={() => player.play(data.featuredTrack!)}>
+                    <Icon name="play" size={16} /> Play
+                  </button>
+                  <SaveTrackButton track={data.featuredTrack} label="Save" className="btn btn-small btn-save" />
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {data.albums && data.albums.length > 0 ? (
+            <section aria-label="Recommended albums" className="search-section">
+              <h3 className="section-title">Recommended albums</h3>
+              <div className="h-scroll" role="list">
+                {data.albums.map((al) => (
+                  <button
+                    key={al.id}
+                    type="button"
+                    role="listitem"
+                    className="album-card"
+                    onClick={() => nav.openAlbum({ id: al.id, title: al.title, artist: al.artist })}
+                  >
+                    <Cover src={al.coverUrl} title={al.title} size={108} />
+                    <span className="album-card-title ellipsis">{al.title}</span>
+                    <span className="album-card-sub ellipsis">{al.artist}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           {data.similarArtists.length ? (
             <section aria-label="Similar artists">
-              <h3 className="section-title">Similar artists</h3>
+              <h3 className="section-title">Artists to explore</h3>
               <ul className="artist-strip">
                 {data.similarArtists.map((a) => (
                   <li key={a.name}>
-                    <button className="artist-chip" onClick={() => pickArtist(a.name)} title={a.playable ? `${a.name} — in your library` : `${a.name} — not in your library`}>
+                    <button className="artist-chip" onClick={() => nav.openArtist({ name: a.name })} title={a.playable ? `${a.name} — in your library` : `${a.name} — explore`}>
                       <span className="artist-avatar">
                         <Cover src={a.imageUrl} title={a.name} size={52} className="round" />
                         {a.playable ? <span className="dot-playable" aria-label="playable" /> : null}

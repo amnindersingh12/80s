@@ -35,14 +35,16 @@ export function verifyStreamToken(
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Returns `/api/stream/:id` with `?st=<exp>.<sig>` when `secret` is configured. */
+/** Returns an absolute (when origin provided) `/api/stream/:id` URL with `?st=<exp>.<sig>` when `secret` is configured. */
 export function buildSignedStreamUrl(
   id: string,
   secret?: string,
   nowMs = Date.now(),
   ttlSec = DEFAULT_STREAM_TOKEN_TTL_SEC,
+  origin?: string,
 ): string {
-  const base = `/api/stream/${encodeURIComponent(id)}`;
-  if (!secret) return base;
-  return `${base}?st=${signStreamToken(id, secret, nowMs, ttlSec)}`;
+  const path = `/api/stream/${encodeURIComponent(id)}`;
+  const signedPath = secret ? `${path}?st=${signStreamToken(id, secret, nowMs, ttlSec)}` : path;
+  if (!origin) return signedPath;
+  return `${origin.replace(/\/+$/, "")}${signedPath}`;
 }

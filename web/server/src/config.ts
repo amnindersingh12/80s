@@ -11,6 +11,7 @@ export interface TrackFieldMap {
   title: string;
   artist: string;
   album: string;
+  albumArtist: string;
   durationSec: string;
   durationMs: string;
   coverUrl: string;
@@ -140,13 +141,14 @@ export const DEFAULT_TRACK_FIELDS: TrackFieldMap = {
   title: "title|name|trackName|track_name",
   artist: "artist.name|artists|artist|artistName|artist_name|performer.name",
   album: "album.title|album.name|album|albumName|album_name",
+  albumArtist: "album.artist.name|albumArtist|album_artist|performer.name",
   durationSec: "duration|durationSec|duration_seconds|length",
   durationMs: "durationMs|duration_ms",
-  coverUrl: "coverUrl|cover_url|cover|artwork|artworkUrl|image|thumbnail|album.coverUrl|album.cover|album.image",
+  coverUrl: "coverUrl|cover_url|cover|artwork|artworkUrl|image|thumbnail|album.coverUrl|album.cover|album.image.large|album.image.small|album.image",
   format: "format|codec|container|extension|suffix",
   quality: "quality|audioQuality|audio_quality",
-  bitDepth: "bitDepth|bit_depth|maximumBitDepth|mediaMetadata.bitDepth",
-  sampleRate: "sampleRate|sample_rate|samplingRate|maximumSamplingRate",
+  bitDepth: "bitDepth|bit_depth|maximum_bit_depth|maximumBitDepth|mediaMetadata.bitDepth",
+  sampleRate: "sampleRate|sample_rate|samplingRate|maximum_sampling_rate|maximumSamplingRate",
   bitrateKbps: "bitrate|bitRate|bitrateKbps",
   year: "year|releaseYear|album.year",
   trackNumber: "trackNumber|track_number|number|position",

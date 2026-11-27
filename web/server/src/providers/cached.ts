@@ -1,7 +1,7 @@
 import { SingleFlight } from "../lib/concurrency.js";
 import type { CacheStore } from "../lib/cache.js";
 import { normalizeText } from "../lib/text.js";
-import type { AudioProvider, ProviderTrack, SearchOptions, StreamOptions, StreamSource } from "./types.js";
+import type { AudioProvider, CatalogSearchResult, ProviderAlbumDetail, ProviderArtistDetail, ProviderTrack, SearchOptions, StreamOptions, StreamSource } from "./types.js";
 
 export interface CacheTtls {
   searchMs: number;
@@ -47,6 +47,51 @@ export class CachedProvider implements AudioProvider {
     await this.cache.set(key, tracks, this.ttl.searchMs);
     await Promise.all(tracks.map((t) => this.cache.set(this.trackKey(t.id), t, this.ttl.trackMs)));
     return { tracks, cached: false };
+  }
+
+  async searchCatalogWithMeta(
+    query: string,
+    options: SearchOptions = {},
+  ): Promise<{ catalog: CatalogSearchResult; cached: boolean }> {
+    const catalogTtl = Math.max(this.ttl.searchMs, 30 * 60_000);
+    const key = `catsearch:${this.name}:${options.type ?? "all"}:${options.limit ?? "d"}:${normalizeText(query)}`;
+    const hit = await this.cache.get<CatalogSearchResult>(key);
+    if (hit) return { catalog: hit, cached: true };
+
+    const catalog: CatalogSearchResult = this.inner.searchCatalog
+      ? await this.inner.searchCatalog(query, options)
+      : { tracks: await this.inner.search(query, options), artists: [], albums: [] };
+    await this.cache.set(key, catalog, catalogTtl);
+    await Promise.all(catalog.tracks.map((t) => this.cache.set(this.trackKey(t.id), t, this.ttl.trackMs)));
+    return { catalog, cached: false };
+  }
+
+  async getArtist(id: string): Promise<ProviderArtistDetail | null> {
+    if (!this.inner.getArtist) return null;
+    const ttl = Math.max(this.ttl.searchMs, 30 * 60_000);
+    const key = `artist:${this.name}:${id}`;
+    const hit = await this.cache.get<ProviderArtistDetail | null>(key);
+    if (hit !== undefined) return hit;
+    const artist = await this.inner.getArtist(id);
+    if (artist) {
+      await this.cache.set(key, artist, ttl);
+      await Promise.all(artist.topTracks.map((t) => this.cache.set(this.trackKey(t.id), t, this.ttl.trackMs)));
+    }
+    return artist;
+  }
+
+  async getAlbum(id: string): Promise<ProviderAlbumDetail | null> {
+    if (!this.inner.getAlbum) return null;
+    const ttl = Math.max(this.ttl.searchMs, 30 * 60_000);
+    const key = `album:${this.name}:${id}`;
+    const hit = await this.cache.get<ProviderAlbumDetail | null>(key);
+    if (hit !== undefined) return hit;
+    const album = await this.inner.getAlbum(id);
+    if (album) {
+      await this.cache.set(key, album, ttl);
+      await Promise.all(album.tracks.map((t) => this.cache.set(this.trackKey(t.id), t, this.ttl.trackMs)));
+    }
+    return album;
   }
 
   /** Cache-only lookup — never touches the network. */

@@ -5,11 +5,15 @@ import {
   parseFlacStreamInfo,
   verifyLosslessStream,
   type AudioProvider,
+  type CatalogSearchResult,
+  type ProviderAlbumDetail,
+  type ProviderArtistDetail,
   type ProviderTrack,
   type SearchOptions,
   type StreamOptions,
   type StreamSource,
 } from "./types.js";
+import type { AlbumSummary, ArtistSummary } from "../../../shared/api.js";
 
 export interface HiFiPoolOptions {
   instances: string[];
@@ -24,10 +28,13 @@ interface RawTracksItem {
   id?: string | number;
   trackId?: string | number;
   title?: string;
+  artistIds?: Array<string | number>;
   artistNames?: string[];
-  artists?: Array<{ name?: string }>;
-  artist?: { name?: string } | string;
-  album?: { title?: string; name?: string; cover?: string; releaseDate?: string; year?: number };
+  artists?: Array<{ id?: string | number; artistId?: string | number; name?: string }>;
+  artist?: { id?: string | number; name?: string } | string;
+  releaseId?: string | number;
+  albumId?: string | number;
+  album?: { id?: string | number; releaseId?: string | number; title?: string; name?: string; cover?: string; releaseDate?: string; year?: number };
   albumTitle?: string;
   artwork?: string;
   artworkUrl?: string;
@@ -53,6 +60,36 @@ interface RawTracksItem {
   file_size?: number;
   size?: number;
   isrc?: string;
+}
+
+interface RawHiFiArtist {
+  id?: string | number;
+  artistId?: string | number;
+  name?: string;
+  displayName?: string;
+  avatar?: string;
+  banner?: string;
+  bio?: string;
+  biography?: string;
+  genres?: string[];
+  tags?: string[];
+  topTracks?: RawTracksItem[];
+  releases?: RawHiFiRelease[];
+  albums?: RawHiFiRelease[];
+  singles?: RawHiFiRelease[];
+}
+
+interface RawHiFiRelease {
+  id?: string | number;
+  releaseId?: string | number;
+  title?: string;
+  artistIds?: Array<string | number>;
+  artistNames?: string[];
+  artists?: Array<{ id?: string | number; artistId?: string | number; name?: string }>;
+  releaseDate?: string;
+  artwork?: string;
+  trackCount?: number;
+  tracks?: RawTracksItem[];
 }
 
 /**
@@ -84,18 +121,164 @@ export class HiFiPoolProvider implements AudioProvider {
 
   async search(query: string, options: SearchOptions = {}): Promise<ProviderTrack[]> {
     const limit = options.limit ?? 25;
+    const data = await this.requestJsonWithFailover<{ tracks?: RawTracksItem[]; items?: RawTracksItem[]; data?: { items?: RawTracksItem[] } }>(
+      (base) => `${base}/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}`,
+      "HiFi search",
+      options.signal,
+    );
+    const items = data?.tracks ?? data?.items ?? data?.data?.items ?? [];
+    return items.map((item) => this.mapTrack(item)).filter((t): t is ProviderTrack => t !== null).slice(0, limit);
+  }
+
+  async searchCatalog(query: string, options: SearchOptions = {}): Promise<CatalogSearchResult> {
+    const limit = options.limit ?? 25;
+    const type = options.type ?? "all";
+    const wantTracks = type === "all" || type === "tracks";
+    const wantArtists = type === "all" || type === "artists";
+    const wantAlbums = type === "all" || type === "albums";
+
+    const [tracksRes, artistsRes, releasesRes] = await Promise.allSettled([
+      wantTracks ? this.search(query, options) : Promise.resolve([]),
+      wantArtists
+        ? this.requestJsonWithFailover<{ artists?: RawHiFiArtist[] }>(
+            (base) => `${base}/search/artists?q=${encodeURIComponent(query)}&limit=${Math.min(limit, 12)}`,
+            "HiFi artist search",
+            options.signal,
+          )
+        : Promise.resolve(null),
+      wantAlbums
+        ? this.requestJsonWithFailover<{ releases?: RawHiFiRelease[] }>(
+            (base) => `${base}/search/releases?q=${encodeURIComponent(query)}&limit=${Math.min(limit, 12)}`,
+            "HiFi release search",
+            options.signal,
+          )
+        : Promise.resolve(null),
+    ]);
+
+    if (wantTracks && tracksRes.status === "rejected" && artistsRes.status === "rejected" && releasesRes.status === "rejected") {
+      throw tracksRes.reason;
+    }
+
+    const tracks = tracksRes.status === "fulfilled" ? tracksRes.value : [];
+    const artists: ArtistSummary[] =
+      artistsRes.status === "fulfilled" && artistsRes.value?.artists
+        ? artistsRes.value.artists
+            .map((a): ArtistSummary | null => {
+              const id = a.artistId ?? a.id;
+              const name = a.displayName ?? a.name;
+              if (!id || !name) return null;
+              return {
+                id: String(id),
+                name,
+                ...(a.avatar ? { imageUrl: a.avatar } : {}),
+                ...(a.genres?.length ? { genres: a.genres } : {}),
+              };
+            })
+            .filter((x): x is ArtistSummary => x !== null)
+        : [];
+    const albums: AlbumSummary[] =
+      releasesRes.status === "fulfilled" && releasesRes.value?.releases
+        ? releasesRes.value.releases
+            .map((r) => this.mapReleaseSummary(r))
+            .filter((x): x is AlbumSummary => x !== null)
+        : [];
+
+    return { tracks, artists, albums };
+  }
+
+  async getArtist(id: string): Promise<ProviderArtistDetail | null> {
+    const raw = await this.requestJsonWithFailover<RawHiFiArtist>(
+      (base) => `${base}/artists/${encodeURIComponent(id)}`,
+      "HiFi artist lookup",
+    ).catch((err) => {
+      if (err instanceof AppError && err.upstreamStatus === 404) return null;
+      throw err;
+    });
+    if (!raw || !(raw.artistId ?? raw.id)) return null;
+    const name = raw.displayName ?? raw.name ?? "Unknown artist";
+    const allReleases = [...(raw.albums ?? []), ...(raw.releases ?? []), ...(raw.singles ?? [])];
+    const seenAlbums = new Map<string, AlbumSummary>();
+    const releaseTracks: ProviderTrack[] = [];
+    for (const rel of allReleases) {
+      const summary = this.mapReleaseSummary(rel, name, String(raw.artistId ?? raw.id));
+      if (summary && !seenAlbums.has(summary.id)) seenAlbums.set(summary.id, summary);
+      for (const rt of rel.tracks ?? []) {
+        const mapped = this.mapTrack({
+          ...rt,
+          albumTitle: rt.albumTitle ?? rel.title,
+          releaseId: rt.releaseId ?? rel.releaseId ?? rel.id,
+          artwork: rt.artwork ?? rel.artwork,
+          releaseDate: rt.releaseDate ?? rel.releaseDate,
+        });
+        if (mapped) releaseTracks.push(mapped);
+      }
+    }
+    const directTop = (raw.topTracks ?? [])
+      .map((t) => this.mapTrack(t))
+      .filter((t): t is ProviderTrack => t !== null);
+    const topTracks = directTop.length ? directTop : releaseTracks.slice(0, 15);
+    return {
+      id: String(raw.artistId ?? raw.id),
+      name,
+      ...(raw.avatar ?? raw.banner ? { imageUrl: raw.avatar ?? raw.banner } : {}),
+      ...(raw.bio ?? raw.biography ? { bio: raw.bio ?? raw.biography } : {}),
+      genres: raw.genres ?? raw.tags ?? [],
+      topTracks,
+      albums: [...seenAlbums.values()],
+    };
+  }
+
+  async getAlbum(id: string): Promise<ProviderAlbumDetail | null> {
+    const raw = await this.requestJsonWithFailover<RawHiFiRelease>(
+      (base) => `${base}/releases/${encodeURIComponent(id)}`,
+      "HiFi album lookup",
+    ).catch((err) => {
+      if (err instanceof AppError && err.upstreamStatus === 404) return null;
+      throw err;
+    });
+    if (!raw || !raw.title) return null;
+    const summary = this.mapReleaseSummary(raw);
+    const tracks = (raw.tracks ?? [])
+      .map((t) =>
+        this.mapTrack({
+          ...t,
+          albumTitle: raw.title,
+          releaseId: t.releaseId ?? raw.releaseId ?? raw.id,
+          artwork: t.artwork ?? raw.artwork,
+          releaseDate: t.releaseDate ?? raw.releaseDate,
+        }),
+      )
+      .filter((t): t is ProviderTrack => t !== null)
+      .sort((a, b) => (a.trackNumber ?? 9999) - (b.trackNumber ?? 9999));
+    const totalDurationMs = tracks.reduce((sum, t) => sum + (t.durationMs ?? (t.durationSec ?? 0) * 1000), 0);
+    return {
+      id: String(raw.releaseId ?? raw.id ?? id),
+      title: raw.title,
+      artist: summary?.artist ?? tracks[0]?.artist ?? "Unknown artist",
+      ...(summary?.artistId ? { artistId: summary.artistId } : {}),
+      ...(raw.artwork ? { coverUrl: raw.artwork } : {}),
+      ...(summary?.year ? { year: summary.year } : {}),
+      trackCount: raw.trackCount ?? tracks.length,
+      totalDurationMs,
+      codec: "FLAC",
+      qualityTier: tracks.some((t) => t.qualityTier === "HI-RES LOSSLESS") ? "HI-RES LOSSLESS" : "LOSSLESS",
+      tracks,
+    };
+  }
+
+  private async requestJsonWithFailover<T>(buildUrl: (base: string) => string, label: string, signal?: AbortSignal): Promise<T | null> {
     let lastErr: unknown;
     for (const base of this.pickOrder()) {
       try {
-        const url = `${base}/search/tracks?q=${encodeURIComponent(query)}&limit=${limit}`;
-        const res = await requestJson<{ tracks?: RawTracksItem[]; items?: RawTracksItem[]; data?: { items?: RawTracksItem[] } }>(url, {
+        const res = await requestJson<T>(buildUrl(base), {
           timeoutMs: this.timeoutMs,
           retries: 0,
-          signal: options.signal,
+          signal,
           fetch: this.fetchFn,
-          label: "HiFi search",
+          label,
           provider: this.name,
         });
+        if (res.status === 404) return null;
         if (res.status === 429 || res.status === 403 || res.status >= 500) {
           const retryAfterMs = res.status === 429 ? parseRetryAfterMs(res.headers, res.data, this.cooldownMs) : this.cooldownMs;
           this.markDown(base, retryAfterMs);
@@ -107,14 +290,13 @@ export class HiFiPoolProvider implements AudioProvider {
           continue;
         }
         if (res.status < 200 || res.status >= 300) {
-          throw new AppError("UPSTREAM_BAD_RESPONSE", `HiFi search failed with HTTP ${res.status}`, {
+          throw new AppError("UPSTREAM_BAD_RESPONSE", `${label} failed with HTTP ${res.status}`, {
             upstreamStatus: res.status,
             provider: this.name,
           });
         }
         this.openUntil.delete(base);
-        const items = res.data?.tracks ?? res.data?.items ?? res.data?.data?.items ?? [];
-        return items.map((item) => this.mapTrack(item)).filter((t): t is ProviderTrack => t !== null).slice(0, limit);
+        return res.data;
       } catch (err) {
         if (err instanceof AppError && err.code === "UPSTREAM_BAD_RESPONSE") throw err;
         this.markDown(base, err instanceof AppError && err.retryAfterMs ? err.retryAfterMs : this.cooldownMs);
@@ -124,6 +306,29 @@ export class HiFiPoolProvider implements AudioProvider {
     throw lastErr instanceof AppError
       ? lastErr
       : new AppError("UPSTREAM_UNAVAILABLE", "All HiFi instances are unavailable", { provider: this.name, cause: lastErr });
+  }
+
+  private mapReleaseSummary(r: RawHiFiRelease, fallbackArtist?: string, fallbackArtistId?: string): AlbumSummary | null {
+    const id = r.releaseId ?? r.id;
+    if (!id || !r.title) return null;
+    const artist =
+      r.artistNames?.filter(Boolean).join(", ") ||
+      r.artists?.map((a) => a.name).filter(Boolean).join(", ") ||
+      fallbackArtist ||
+      "Various Artists";
+    const artistId = r.artistIds?.[0] ?? r.artists?.[0]?.artistId ?? r.artists?.[0]?.id ?? fallbackArtistId;
+    const ym = r.releaseDate?.match(/^(\d{4})/);
+    return {
+      id: String(id),
+      title: r.title,
+      artist,
+      ...(artistId !== undefined ? { artistId: String(artistId) } : {}),
+      ...(r.artwork ? { coverUrl: r.artwork } : {}),
+      ...(ym ? { year: Number(ym[1]) } : {}),
+      ...(r.trackCount ? { trackCount: r.trackCount } : {}),
+      codec: "FLAC",
+      qualityTier: "LOSSLESS",
+    };
   }
 
   async getTrackMetadata(id: string): Promise<ProviderTrack | null> {
@@ -176,7 +381,12 @@ export class HiFiPoolProvider implements AudioProvider {
         }
         await res.body?.cancel().catch(() => undefined);
         if (res.status === 404) {
-          throw new AppError("NOT_FOUND", "Track not found on HiFi pool", { upstreamStatus: 404, provider: this.name });
+          this.markDown(base, this.cooldownMs);
+          lastErr = new AppError("UPSTREAM_UNAVAILABLE", `Track ${id} missing on HiFi instance ${base}`, {
+            upstreamStatus: 404,
+            provider: this.name,
+          });
+          continue;
         }
         const retryAfterMs = res.status === 429 ? parseRetryAfterMs(res.headers, undefined, this.cooldownMs) : this.cooldownMs;
         this.markDown(base, retryAfterMs);
@@ -239,12 +449,20 @@ export class HiFiPoolProvider implements AudioProvider {
     const rawSr = raw.sampleRate ?? raw.sample_rate;
     const sampleRate = rawSr !== undefined ? (rawSr < 1000 ? Math.round(rawSr * 1000) : Math.round(rawSr)) : undefined;
     const fileSize = raw.fileSize ?? raw.file_size ?? raw.size;
+    const artistId =
+      raw.artistIds?.[0] ??
+      raw.artists?.[0]?.artistId ??
+      raw.artists?.[0]?.id ??
+      (typeof raw.artist === "object" ? raw.artist?.id : undefined);
+    const albumId = raw.releaseId ?? raw.albumId ?? raw.album?.releaseId ?? raw.album?.id;
     const track: ProviderTrack = {
       id: String(id),
       provider: this.name,
       title: raw.title,
       artist,
+      ...(artistId !== undefined ? { artistId: String(artistId) } : {}),
       ...(album ? { album } : {}),
+      ...(albumId !== undefined ? { albumId: String(albumId) } : {}),
       ...(year ? { year } : {}),
       ...(trackNumber ? { trackNumber } : {}),
       ...(dur !== undefined ? { durationSec: dur } : {}),

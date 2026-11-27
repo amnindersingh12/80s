@@ -42,6 +42,7 @@
             <intent-filter>
                 <action android:name="com.maxmpz.audioplayer.TRACK_CHANGED" />
                 <action android:name="com.maxmpz.audioplayer.TRACK_CHANGED_EXPLICIT" />
+                <action android:name="com.maxmpz.audioplayer.STATUS_CHANGED" />
             </intent-filter>
         </receiver>
 

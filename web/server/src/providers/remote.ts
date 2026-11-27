@@ -3,13 +3,17 @@ import { Semaphore } from "../lib/concurrency.js";
 import { pick, pickArray, pickNumber, pickString } from "../lib/fields.js";
 import { fillPath, joinUrl, parseRetryAfterMs, requestJson, sleep as defaultSleep, type FetchFn, type JsonResponse } from "../lib/http.js";
 import type { RemoteProviderConfig } from "../config.js";
+import type { AlbumSummary, ArtistSummary } from "../../../shared/api.js";
 import {
   MIME_BY_EXTENSION,
   inferLossless,
   parseFlacStreamInfo,
   verifyLosslessStream,
   type AudioProvider,
+  type CatalogSearchResult,
   type JobProgress,
+  type ProviderAlbumDetail,
+  type ProviderArtistDetail,
   type ProviderTrack,
   type SearchOptions,
   type StreamOptions,
@@ -92,6 +96,10 @@ export class RemoteMediaProvider implements AudioProvider {
   }
 
   async search(query: string, options: SearchOptions = {}): Promise<ProviderTrack[]> {
+    return (await this.searchCatalog(query, options)).tracks;
+  }
+
+  async searchCatalog(query: string, options: SearchOptions = {}): Promise<CatalogSearchResult> {
     const t = this.now();
     while (this.searchTimestamps.length && t - this.searchTimestamps[0]! >= 60_000) this.searchTimestamps.shift();
     if (this.searchTimestamps.length >= this.maxSearchesPerMin) {
@@ -120,8 +128,137 @@ export class RemoteMediaProvider implements AudioProvider {
 
     const tracks = pickArray(res.data, this.cfg.searchResultsPath)
       .map((raw) => this.mapTrack(raw))
-      .filter((t): t is ProviderTrack => t !== null);
-    return options.limit ? tracks.slice(0, options.limit) : tracks;
+      .filter((tr): tr is ProviderTrack => tr !== null);
+    const limitedTracks = options.limit ? tracks.slice(0, options.limit) : tracks;
+
+    const artists: ArtistSummary[] = pickArray(res.data, "data.artists.items|artists.items|artists")
+      .map((raw): ArtistSummary | null => {
+        const id = pickString(raw, "id");
+        const name = pickString(raw, "name|name.display");
+        if (!id || !name) return null;
+        const img = pickString(raw, "image.large|image.medium|image.small|picture");
+        return {
+          id,
+          name,
+          ...(img ? { imageUrl: this.absolute(img) } : {}),
+        };
+      })
+      .filter((x): x is ArtistSummary => x !== null)
+      .slice(0, 12);
+
+    const albums: AlbumSummary[] = pickArray(res.data, "data.albums.items|albums.items|albums")
+      .map((raw): AlbumSummary | null => this.mapRemoteAlbumSummary(raw))
+      .filter((x): x is AlbumSummary => x !== null)
+      .slice(0, 12);
+
+    return { tracks: limitedTracks, artists, albums };
+  }
+
+  async getArtist(id: string): Promise<ProviderArtistDetail | null> {
+    const url = new URL(joinUrl(this.cfg.baseUrl, "/api/get-artist"));
+    url.searchParams.set("artist_id", id);
+    const res = await this.authedJson(url.toString(), {
+      timeoutMs: this.cfg.requestTimeoutMs,
+      retries: 1,
+      label: "Artist lookup",
+    });
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) return null;
+    const raw = pick(res.data, "data.artist|artist") as Record<string, unknown> | undefined;
+    if (!raw) return null;
+    const name = pickString(raw, "name.display|name") ?? "Unknown artist";
+    const imageUrl = pickString(raw, "images.portrait.hash|image.large|image.medium|picture");
+    const rawBio = pickString(raw, "biography.content|bio");
+    const topTracks = pickArray(raw, "top_tracks.items|top_tracks")
+      .map((tr) => this.mapTrack(tr))
+      .filter((tr): tr is ProviderTrack => tr !== null);
+    const albums = pickArray(raw, "releases.items|releases|albums.items")
+      .map((al) => this.mapRemoteAlbumSummary(al, name, id))
+      .filter((al): al is AlbumSummary => al !== null);
+    return {
+      id,
+      name,
+      ...(imageUrl && /^https?:\/\//i.test(imageUrl) ? { imageUrl } : {}),
+      ...(rawBio ? { bio: rawBio } : {}),
+      genres: [],
+      topTracks,
+      albums,
+    };
+  }
+
+  async getAlbum(id: string): Promise<ProviderAlbumDetail | null> {
+    const url = new URL(joinUrl(this.cfg.baseUrl, "/api/get-album"));
+    url.searchParams.set("album_id", id);
+    const res = await this.authedJson(url.toString(), {
+      timeoutMs: this.cfg.requestTimeoutMs,
+      retries: 1,
+      label: "Album lookup",
+    });
+    if (res.status === 404) return null;
+    if (res.status < 200 || res.status >= 300) return null;
+    const raw = pick(res.data, "data|album") as Record<string, unknown> | undefined;
+    if (!raw) return null;
+    const summary = this.mapRemoteAlbumSummary(raw);
+    if (!summary) return null;
+    const rawTracks = pickArray(raw, "tracks.items|tracks");
+    const tracks = rawTracks
+      .map((tr) =>
+        this.mapTrack({
+          ...(typeof tr === "object" && tr ? (tr as Record<string, unknown>) : {}),
+          album: raw,
+          artist: (typeof tr === "object" && tr && "performer" in tr ? (tr as { performer?: unknown }).performer : undefined) ?? raw["artist"],
+        }),
+      )
+      .filter((tr): tr is ProviderTrack => tr !== null)
+      .sort((a, b) => (a.trackNumber ?? 9999) - (b.trackNumber ?? 9999));
+    const totalDurationMs = tracks.reduce((sum, tr) => sum + (tr.durationMs ?? (tr.durationSec ?? 0) * 1000), 0);
+    const bitDepth = pickNumber(raw, "maximum_bit_depth|bitDepth");
+    const sampleRate = normalizeSampleRate(pickNumber(raw, "maximum_sampling_rate|sampleRate"));
+    const isHiRes = (bitDepth !== undefined && bitDepth > 16) || (sampleRate !== undefined && sampleRate > 48_000);
+    return {
+      id: summary.id,
+      title: summary.title,
+      artist: summary.artist,
+      ...(summary.artistId ? { artistId: summary.artistId } : {}),
+      ...(summary.coverUrl ? { coverUrl: summary.coverUrl } : {}),
+      ...(summary.year ? { year: summary.year } : {}),
+      trackCount: pickNumber(raw, "tracks_count") ?? tracks.length,
+      totalDurationMs,
+      codec: "FLAC",
+      ...(bitDepth ? { bitDepth } : {}),
+      ...(sampleRate ? { sampleRate } : {}),
+      qualityTier: isHiRes ? "HI-RES LOSSLESS" : "LOSSLESS",
+      tracks,
+    };
+  }
+
+  private mapRemoteAlbumSummary(raw: unknown, fallbackArtist?: string, fallbackArtistId?: string): AlbumSummary | null {
+    const id = pickString(raw, "id|album_id|upc");
+    const title = pickString(raw, "title|name");
+    if (!id || !title) return null;
+    const artist = pickString(raw, "artist.name|artists.0.name|artist") ?? fallbackArtist ?? "Unknown artist";
+    const artistId = pickString(raw, "artist.id|artists.0.id") ?? fallbackArtistId;
+    const cover = pickString(raw, "image.large|image.small|image.thumbnail|coverUrl|cover|artwork");
+    const coverUrl = cover && (/^https?:\/\//i.test(cover) || cover.startsWith("/")) ? this.absolute(cover) : undefined;
+    const year =
+      yearFromDate(pickString(raw, "release_date_original|releaseDate|release_date")) ??
+      pickNumber(raw, "year");
+    const bitDepth = pickNumber(raw, "maximum_bit_depth|bitDepth");
+    const sampleRate = normalizeSampleRate(pickNumber(raw, "maximum_sampling_rate|sampleRate"));
+    const isHiRes = (bitDepth !== undefined && bitDepth > 16) || (sampleRate !== undefined && sampleRate > 48_000);
+    return {
+      id,
+      title,
+      artist,
+      ...(artistId ? { artistId } : {}),
+      ...(coverUrl ? { coverUrl } : {}),
+      ...(year ? { year } : {}),
+      ...(pickNumber(raw, "tracks_count|trackCount") ? { trackCount: pickNumber(raw, "tracks_count|trackCount") } : {}),
+      codec: "FLAC",
+      ...(bitDepth ? { bitDepth } : {}),
+      ...(sampleRate ? { sampleRate } : {}),
+      qualityTier: isHiRes ? "HI-RES LOSSLESS" : "LOSSLESS",
+    };
   }
 
   async getTrackMetadata(id: string): Promise<ProviderTrack | null> {
@@ -427,7 +564,10 @@ export class RemoteMediaProvider implements AudioProvider {
       provider: this.name,
       title,
       artist: pickString(raw, f.artist) ?? "Unknown artist",
+      artistId: pickString(raw, "artist.id|artists.0.id|artistId|performer.id"),
       album: pickString(raw, f.album),
+      albumId: pickString(raw, "album.id|albumId|album_id|album.qobuz_id"),
+      albumArtist: pickString(raw, f.albumArtist),
       durationSec: durationSec !== undefined ? Math.round(durationSec) : undefined,
       coverUrl,
       format: format ?? "flac",

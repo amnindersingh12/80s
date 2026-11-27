@@ -54,7 +54,10 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
                 track_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 artist TEXT NOT NULL,
+                artist_id TEXT,
+                album_artist TEXT,
                 album TEXT,
+                album_id TEXT,
                 year INTEGER,
                 track_number INTEGER,
                 duration_ms INTEGER NOT NULL,
@@ -87,6 +90,13 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            runCatching { db.execSQL("ALTER TABLE tracks ADD COLUMN album_artist TEXT") }
+        }
+        if (oldVersion < 3) {
+            runCatching { db.execSQL("ALTER TABLE tracks ADD COLUMN artist_id TEXT") }
+            runCatching { db.execSQL("ALTER TABLE tracks ADD COLUMN album_id TEXT") }
+        }
         seedDefaultFolders(db)
     }
 
@@ -196,6 +206,37 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
+    fun addToQueue(tracks: List<LosslessTrack>, playNext: Boolean = false) {
+        if (tracks.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val ids = tracks.map { it.id }.toSet()
+        synchronized(this) {
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                val existing = readableDatabase.rawQuery(
+                    "SELECT * FROM tracks WHERE folder_id = ? ORDER BY sort_order ASC",
+                    arrayOf(FOLDER_QUEUE),
+                ).use { c ->
+                    buildList {
+                        while (c.moveToNext()) add(c.toTrackRow().track)
+                    }.filterNot { it.id in ids }
+                }
+                val combined = if (playNext) tracks + existing else existing + tracks
+                db.delete("tracks", "folder_id = ?", arrayOf(FOLDER_QUEUE))
+                combined.take(100).forEachIndexed { idx, t ->
+                    val docId = trackDocId(FOLDER_QUEUE, idx, t.id)
+                    insertTrack(db, docId, FOLDER_QUEUE, t, t.genre ?: "Queue", idx + 1, now)
+                }
+                val cv = ContentValues().apply { put("last_modified", now) }
+                db.update("folders", cv, "doc_id = ? OR doc_id = ?", arrayOf(FOLDER_QUEUE, ROOT_DOC_ID))
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
+        }
+    }
+
     fun getCachedLyrics(artist: String, title: String): LyricsData? = synchronized(this) {
         val key = "${artist.trim().lowercase()}|${title.trim().lowercase()}"
         val minFresh = System.currentTimeMillis() - 7 * 24 * 60 * 60_000L
@@ -240,7 +281,10 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
             put("track_id", track.id)
             put("title", track.title)
             put("artist", track.artist)
+            put("artist_id", track.artistId)
+            put("album_artist", track.albumArtist)
             put("album", track.album)
+            put("album_id", track.albumId)
             track.year?.let { put("year", it) }
             track.trackNumber?.let { put("track_number", it) }
             put("duration_ms", track.effectiveDurationMs)
@@ -273,7 +317,10 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
             provider = "80s",
             title = getString(getColumnIndexOrThrow("title")),
             artist = getString(getColumnIndexOrThrow("artist")),
+            artistId = getStringOrNull("artist_id"),
+            albumArtist = getStringOrNull("album_artist"),
             album = getStringOrNull("album"),
+            albumId = getStringOrNull("album_id"),
             year = getIntOrNull("year"),
             trackNumber = getIntOrNull("track_number"),
             durationMs = getLong(getColumnIndexOrThrow("duration_ms")),
@@ -312,7 +359,7 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "eighties_bridge.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 3
 
         const val ROOT_ID = "eighties_root"
         const val ROOT_DOC_ID = "root"
@@ -326,6 +373,7 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
         const val FOLDER_PUNJABI = "root/punjabi_desi"
         const val FOLDER_RADIO = "root/radio"
         const val FOLDER_RECENT_SEARCHES = "root/recent_searches"
+        const val FOLDER_QUEUE = "root/bridge_queue"
 
         fun trackDocId(folderId: String, index: Int, rawTrackId: String): String {
             val safeId = Integer.toHexString(rawTrackId.hashCode())
@@ -362,6 +410,7 @@ class BridgeDatabase(context: Context) : SQLiteOpenHelper(
             FolderSpec(FOLDER_PUNJABI, ROOT_DOC_ID, "Punjabi & Desi", 3, false),
             FolderSpec(FOLDER_RADIO, ROOT_DOC_ID, "Radio (Based on Now Playing)", 4, false),
             FolderSpec(FOLDER_RECENT_SEARCHES, ROOT_DOC_ID, "Recent Searches", 5, false),
+            FolderSpec(FOLDER_QUEUE, ROOT_DOC_ID, "Bridge Queue", 6, false),
         )
     }
 }

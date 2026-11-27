@@ -11,12 +11,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Receives Poweramp's `TRACK_CHANGED` / `TRACK_CHANGED_EXPLICIT` broadcasts and updates
- * the `Radio (Based on Now Playing)` virtual folder with lossless recommendations.
+ * Receives Poweramp's `TRACK_CHANGED`, `TRACK_CHANGED_EXPLICIT`, and `STATUS_CHANGED`
+ * broadcasts, updates [PowerampStateMonitor], and refreshes the `Radio (Based on Now Playing)` folder.
  */
 class PowerampTrackReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        PowerampStateMonitor.onBroadcast(context, intent)
+
         val action = intent.action
         if (action != PowerampContract.ACTION_TRACK_CHANGED &&
             action != PowerampContract.ACTION_TRACK_CHANGED_EXPLICIT

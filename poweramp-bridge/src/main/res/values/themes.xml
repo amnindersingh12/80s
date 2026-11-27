@@ -1,6 +1,10 @@
 <resources>
-    <style name="Theme.EightiesBridge" parent="Theme.Material3.DayNight.NoActionBar">
+    <style name="Theme.EightiesBridge" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">#8C67FF</item>
         <item name="colorSecondary">#4ED8B4</item>
+        <item name="android:windowBackground">#0D1016</item>
+        <item name="colorSurface">#131722</item>
+        <item name="android:navigationBarColor">#0D1016</item>
+        <item name="android:statusBarColor">#0D1016</item>
     </style>
 </resources>

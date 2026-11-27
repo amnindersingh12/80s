@@ -2,6 +2,7 @@ package app.eighties.poweramp.data
 
 import android.content.Context
 import app.eighties.poweramp.download.FlacDownloadManager
+import app.eighties.poweramp.download.LocalLibraryIndex
 
 object BridgeAppGraph {
     @Volatile
@@ -18,6 +19,9 @@ object BridgeAppGraph {
 
     @Volatile
     private var downloadInstance: FlacDownloadManager? = null
+
+    @Volatile
+    private var localLibraryInstance: LocalLibraryIndex? = null
 
     fun prefs(context: Context): BridgePrefs =
         prefsInstance ?: synchronized(this) {
@@ -57,5 +61,10 @@ object BridgeAppGraph {
                 prefs(context),
                 api(context),
             ).also { downloadInstance = it }
+        }
+
+    fun localLibrary(context: Context): LocalLibraryIndex =
+        localLibraryInstance ?: synchronized(this) {
+            localLibraryInstance ?: LocalLibraryIndex(context.applicationContext).also { localLibraryInstance = it }
         }
 }
