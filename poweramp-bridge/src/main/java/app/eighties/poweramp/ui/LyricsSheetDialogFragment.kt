@@ -103,10 +103,11 @@ class LyricsSheetDialogFragment : DialogFragment() {
         btnSaveFlac.isVisible = trackObj != null
         btnSaveFlac.setOnClickListener {
             val tr = trackObj ?: return@setOnClickListener
+            val appCtx = requireContext().applicationContext
             btnSaveFlac.isEnabled = false
             btnSaveFlac.text = "Saving…"
             viewLifecycleOwner.lifecycleScope.launch {
-                runCatching { BridgeAppGraph.downloads(requireContext()).downloadToLibrary(tr) }
+                suspendRunCatching { BridgeAppGraph.downloads(appCtx).downloadToLibrary(tr) }
                     .onSuccess {
                         btnSaveFlac.text = "Saved"
                     }

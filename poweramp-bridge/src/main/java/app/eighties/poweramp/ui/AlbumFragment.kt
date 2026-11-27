@@ -52,66 +52,69 @@ class AlbumFragment : Fragment() {
         binding.albumTracksRecycler.layoutManager = LinearLayoutManager(requireContext())
         binding.albumTracksRecycler.adapter = trackAdapter
 
+        val ctx = requireContext().applicationContext
         viewLifecycleOwner.lifecycleScope.launch {
-            binding.albumLoading.isVisible = true
-            runCatching { BridgeAppGraph.api(requireContext()).albumDetail(albumId, albumTitle, albumArtist) }
+            _binding?.albumLoading?.isVisible = true
+            suspendRunCatching { BridgeAppGraph.api(ctx).albumDetail(albumId, albumTitle, albumArtist) }
                 .onSuccess { detail ->
-                    binding.albumLoading.isVisible = false
-                    binding.albumHeaderTitle.text = detail.title
-                    binding.btnAlbumArtist.text = detail.artist
-                    binding.btnAlbumArtist.setOnClickListener {
+                    val b = _binding ?: return@onSuccess
+                    b.albumLoading.isVisible = false
+                    b.albumHeaderTitle.text = detail.title
+                    b.btnAlbumArtist.text = detail.artist
+                    b.btnAlbumArtist.setOnClickListener {
                         BridgePlayerActions.openArtist(this@AlbumFragment, detail.artistId, detail.artist)
                     }
                     val totalMin = (detail.totalDurationMs / 60_000L).toInt()
                     val specs = if (detail.bitDepth != null && detail.sampleRate != null) {
                         "${detail.codec} · ${detail.bitDepth}-bit/${String.format(Locale.US, "%.1f", detail.sampleRate / 1000.0)}kHz"
                     } else "${detail.qualityTier} · ${detail.codec}"
-                    binding.albumHeaderBadge.text = specs
-                    binding.albumMeta.text = listOfNotNull(
+                    b.albumHeaderBadge.text = specs
+                    b.albumMeta.text = listOfNotNull(
                         detail.year?.toString(),
                         "${detail.trackCount} tracks",
                         "$totalMin min",
                     ).joinToString(" · ")
 
-                    CoverLoader.load(binding.albumHeaderCover, detail.coverUrl, R.drawable.ic_music_note)
+                    CoverLoader.load(b.albumHeaderCover, detail.coverUrl, R.drawable.ic_music_note)
                     trackAdapter.submitList(detail.tracks)
 
-                    binding.btnPlayAlbum.setOnClickListener {
+                    b.btnPlayAlbum.setOnClickListener {
                         BridgePlayerActions.playList(this@AlbumFragment, detail.tracks)
                     }
-                    binding.btnDownloadAlbum.setOnClickListener {
-                        binding.btnDownloadAlbum.isEnabled = false
-                        binding.btnDownloadAlbum.text = "Downloading…"
+                    b.btnDownloadAlbum.setOnClickListener {
+                        b.btnDownloadAlbum.isEnabled = false
+                        b.btnDownloadAlbum.text = "Downloading…"
                         viewLifecycleOwner.lifecycleScope.launch {
-                            val ctx = requireContext()
                             var okCount = 0
                             for (tr in detail.tracks) {
                                 trackAdapter.setDownloadState(tr.id, DownloadState.DOWNLOADING)
-                                val ok = runCatching { BridgeAppGraph.downloads(ctx).downloadToLibrary(tr) }.isSuccess
+                                val ok = suspendRunCatching { BridgeAppGraph.downloads(ctx).downloadToLibrary(tr) }.isSuccess
                                 trackAdapter.setDownloadState(tr.id, if (ok) DownloadState.DOWNLOADED else DownloadState.IDLE)
                                 if (ok) okCount++
                             }
-                            if (_binding != null) {
-                                binding.btnDownloadAlbum.isEnabled = true
-                                binding.btnDownloadAlbum.text = "Download Album"
-                                Toast.makeText(ctx, "Saved $okCount/${detail.tracks.size} lossless tracks", Toast.LENGTH_SHORT).show()
+                            _binding?.let { cur ->
+                                cur.btnDownloadAlbum.isEnabled = true
+                                cur.btnDownloadAlbum.text = "Download Album"
                             }
+                            Toast.makeText(ctx, "Saved $okCount/${detail.tracks.size} lossless tracks", Toast.LENGTH_SHORT).show()
                         }
                     }
 
                     val bmp = CoverLoader.loadBitmap(detail.coverUrl)
-                    if (bmp != null && _binding != null) {
+                    val cur = _binding ?: return@onSuccess
+                    if (bmp != null) {
                         val accent = CoverLoader.extractAccentColor(bmp)
-                        binding.albumHeaderBg.background = GradientDrawable(
+                        cur.albumHeaderBg.background = GradientDrawable(
                             GradientDrawable.Orientation.TOP_BOTTOM,
                             intArrayOf(accent, 0x00000000),
                         )
                     }
                 }
                 .onFailure { err ->
-                    binding.albumLoading.isVisible = false
-                    binding.albumError.isVisible = true
-                    binding.albumError.text = err.message ?: getString(R.string.connection_error)
+                    val b = _binding ?: return@onFailure
+                    b.albumLoading.isVisible = false
+                    b.albumError.isVisible = true
+                    b.albumError.text = err.message ?: getString(R.string.connection_error)
                 }
         }
     }

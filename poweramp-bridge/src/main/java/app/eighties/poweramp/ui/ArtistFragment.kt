@@ -60,56 +60,62 @@ class ArtistFragment : Fragment() {
         binding.similarArtistsRecycler.layoutManager = LinearLayoutManager(requireContext(), LinearLayoutManager.HORIZONTAL, false)
         binding.similarArtistsRecycler.adapter = similarAdapter
 
+        val ctx = requireContext().applicationContext
         viewLifecycleOwner.lifecycleScope.launch {
-            binding.artistLoading.isVisible = true
-            runCatching { BridgeAppGraph.api(requireContext()).artistDetail(artistId, artistName) }
+            _binding?.artistLoading?.isVisible = true
+            suspendRunCatching { BridgeAppGraph.api(ctx).artistDetail(artistId, artistName) }
                 .onSuccess { detail ->
-                    binding.artistLoading.isVisible = false
-                    binding.artistHeaderName.text = detail.name
-                    binding.artistGenres.text = detail.genres.take(4).joinToString(" · ")
-                    CoverLoader.load(binding.artistHeaderCover, detail.imageUrl, R.drawable.ic_music_note)
+                    val b = _binding ?: return@onSuccess
+                    b.artistLoading.isVisible = false
+                    b.artistHeaderName.text = detail.name
+                    b.artistGenres.text = detail.genres.take(4).joinToString(" · ")
+                    CoverLoader.load(b.artistHeaderCover, detail.imageUrl, R.drawable.ic_music_note)
 
                     trackAdapter.submitList(detail.topTracks)
-                    binding.artistAlbumsHeader.isVisible = detail.albums.isNotEmpty()
-                    binding.artistAlbumsRecycler.isVisible = detail.albums.isNotEmpty()
+                    b.artistAlbumsHeader.isVisible = detail.albums.isNotEmpty()
+                    b.artistAlbumsRecycler.isVisible = detail.albums.isNotEmpty()
                     albumAdapter.submitList(detail.albums)
 
-                    binding.similarArtistsHeader.isVisible = detail.similarArtists.isNotEmpty()
-                    binding.similarArtistsRecycler.isVisible = detail.similarArtists.isNotEmpty()
+                    b.similarArtistsHeader.isVisible = detail.similarArtists.isNotEmpty()
+                    b.similarArtistsRecycler.isVisible = detail.similarArtists.isNotEmpty()
                     similarAdapter.submitList(detail.similarArtists)
 
-                    binding.btnPlayArtistTop.setOnClickListener {
+                    b.btnPlayArtistTop.setOnClickListener {
                         BridgePlayerActions.playList(this@ArtistFragment, detail.topTracks)
                     }
-                    binding.btnArtistRadio.setOnClickListener {
-                        val ctx = requireContext()
+                    b.btnArtistRadio.setOnClickListener {
+                        val appCtx = requireContext().applicationContext
                         viewLifecycleOwner.lifecycleScope.launch {
-                            runCatching {
-                                val tracks = BridgeAppGraph.api(ctx).home(seedArtist = detail.name, limit = 20)
-                                BridgeAppGraph.db(ctx).replaceFolderTracks(BridgeDatabase.FOLDER_RADIO, tracks, "Radio: ${detail.name}")
-                                PowerampHelper.triggerRescan(ctx, BridgeDatabase.FOLDER_RADIO, fromUi = true)
+                            suspendRunCatching {
+                                val tracks = BridgeAppGraph.api(appCtx).home(seedArtist = detail.name, limit = 20)
+                                BridgeAppGraph.db(appCtx).replaceFolderTracks(BridgeDatabase.FOLDER_RADIO, tracks, "Radio: ${detail.name}")
+                                PowerampHelper.triggerRescan(appCtx, BridgeDatabase.FOLDER_RADIO, fromUi = true)
                                 tracks
                             }.onSuccess { tracks ->
-                                if (tracks.isNotEmpty()) BridgePlayerActions.playTrack(this@ArtistFragment, tracks.first())
+                                if (_binding != null && tracks.isNotEmpty()) {
+                                    BridgePlayerActions.playTrack(this@ArtistFragment, tracks.first())
+                                }
                             }.onFailure { err ->
-                                Toast.makeText(ctx, err.message ?: "Radio unavailable", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(appCtx, err.message ?: "Radio unavailable", Toast.LENGTH_SHORT).show()
                             }
                         }
                     }
 
                     val bmp = CoverLoader.loadBitmap(detail.imageUrl)
-                    if (bmp != null && _binding != null) {
+                    val cur = _binding ?: return@onSuccess
+                    if (bmp != null) {
                         val accent = CoverLoader.extractAccentColor(bmp)
-                        binding.artistHeaderBg.background = GradientDrawable(
+                        cur.artistHeaderBg.background = GradientDrawable(
                             GradientDrawable.Orientation.TOP_BOTTOM,
                             intArrayOf(accent, 0x00000000),
                         )
                     }
                 }
                 .onFailure { err ->
-                    binding.artistLoading.isVisible = false
-                    binding.artistError.isVisible = true
-                    binding.artistError.text = err.message ?: getString(R.string.connection_error)
+                    val b = _binding ?: return@onFailure
+                    b.artistLoading.isVisible = false
+                    b.artistError.isVisible = true
+                    b.artistError.text = err.message ?: getString(R.string.connection_error)
                 }
         }
     }

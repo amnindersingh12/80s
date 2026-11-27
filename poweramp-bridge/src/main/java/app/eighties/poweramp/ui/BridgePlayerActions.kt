@@ -9,13 +9,24 @@ import app.eighties.poweramp.data.BridgeAppGraph
 import app.eighties.poweramp.data.LosslessTrack
 import app.eighties.poweramp.poweramp.PowerampHelper
 import app.eighties.poweramp.poweramp.PowerampStateMonitor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+
+/** Same as [runCatching], except coroutine cancellation always propagates cleanly. */
+suspend inline fun <T> suspendRunCatching(crossinline block: suspend () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (c: CancellationException) {
+        throw c
+    } catch (t: Throwable) {
+        Result.failure(t)
+    }
 
 /** Shared playback, queue, download, and navigation actions used across Discover, Search, Artist, and Album views. */
 object BridgePlayerActions {
 
     fun playTrack(fragment: Fragment, track: LosslessTrack, onBusyMessage: ((String?) -> Unit)? = null) {
-        val ctx = fragment.requireContext()
+        val ctx = fragment.context?.applicationContext ?: return
         val localUri = BridgeAppGraph.localLibrary(ctx).findLocalUri(track.artist, track.title)
         if (localUri != null) {
             PowerampStateMonitor.setOptimisticPlaying(ctx, track)
@@ -26,7 +37,7 @@ object BridgePlayerActions {
         }
         fragment.viewLifecycleOwner.lifecycleScope.launch {
             onBusyMessage?.invoke(ctx.getString(R.string.preparing_stream, track.title))
-            runCatching {
+            suspendRunCatching {
                 val prepared = BridgeAppGraph.api(ctx).prepareOrResolve(track)
                 BridgeAppGraph.db(ctx).addRecentSearchTrack(prepared.track)
                 prepared
@@ -60,10 +71,10 @@ object BridgePlayerActions {
     }
 
     fun downloadTrack(fragment: Fragment, track: LosslessTrack, onState: ((DownloadState) -> Unit)? = null) {
-        val ctx = fragment.requireContext()
+        val ctx = fragment.context?.applicationContext ?: return
         onState?.invoke(DownloadState.DOWNLOADING)
         fragment.viewLifecycleOwner.lifecycleScope.launch {
-            runCatching { BridgeAppGraph.downloads(ctx).downloadToLibrary(track) }
+            suspendRunCatching { BridgeAppGraph.downloads(ctx).downloadToLibrary(track) }
                 .onSuccess { savedPath ->
                     onState?.invoke(DownloadState.DOWNLOADED)
                     Toast.makeText(ctx, ctx.getString(R.string.download_saved, savedPath), Toast.LENGTH_SHORT).show()

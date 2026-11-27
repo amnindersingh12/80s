@@ -102,12 +102,12 @@ class DiscoverFragment : Fragment() {
     }
 
     private fun loadFeed(genre: String) {
-        val ctx = requireContext()
+        val ctx = requireContext().applicationContext
         val nowPlaying = PowerampStateMonitor.state.value
         loadJob?.cancel()
         loadJob = viewLifecycleOwner.lifecycleScope.launch {
-            binding.discoverLoading.isVisible = true
-            runCatching {
+            _binding?.discoverLoading?.isVisible = true
+            suspendRunCatching {
                 BridgeAppGraph.api(ctx).homeFeed(
                     genre = genre,
                     nowPlayingArtist = nowPlaying.artist.takeIf { nowPlaying.hasTrack },
@@ -115,31 +115,34 @@ class DiscoverFragment : Fragment() {
                     limit = 24,
                 )
             }.onSuccess { feed ->
-                binding.discoverLoading.isVisible = false
-                bindFeed(feed)
+                val b = _binding ?: return@onSuccess
+                b.discoverLoading.isVisible = false
+                bindFeed(b, feed)
             }.onFailure { err ->
-                binding.discoverLoading.isVisible = false
-                binding.discoverEmpty.isVisible = topTracksAdapter.currentList.isEmpty()
-                binding.discoverEmpty.text = err.message ?: getString(R.string.connection_error)
+                val b = _binding ?: return@onFailure
+                b.discoverLoading.isVisible = false
+                b.discoverEmpty.isVisible = topTracksAdapter.currentList.isEmpty()
+                b.discoverEmpty.text = err.message ?: getString(R.string.connection_error)
             }
         }
     }
 
-    private fun bindFeed(feed: HomeFeed) {
+    private fun bindFeed(b: FragmentDiscoverBinding, feed: HomeFeed) {
         val hero = feed.featuredTrack
-        binding.discoverHeroCard.isVisible = hero != null
+        b.discoverHeroCard.isVisible = hero != null
         if (hero != null) {
-            CoverLoader.load(binding.discoverHeroCover, hero.artworkUrl, R.drawable.ic_music_note)
-            binding.discoverHeroBadge.text = hero.badgeText
-            binding.discoverHeroTitle.text = hero.title
-            binding.discoverHeroSub.text = listOfNotNull(hero.artist, hero.album).joinToString(" · ")
-            binding.discoverHeroPlay.setOnClickListener { BridgePlayerActions.playTrack(this, hero) }
-            binding.discoverHeroSave.setOnClickListener { BridgePlayerActions.downloadTrack(this, hero) }
+            CoverLoader.load(b.discoverHeroCover, hero.artworkUrl, R.drawable.ic_music_note)
+            b.discoverHeroBadge.text = hero.badgeText
+            b.discoverHeroTitle.text = hero.title
+            b.discoverHeroSub.text = listOfNotNull(hero.artist, hero.album).joinToString(" · ")
+            b.discoverHeroPlay.setOnClickListener { BridgePlayerActions.playTrack(this, hero) }
+            b.discoverHeroSave.setOnClickListener { BridgePlayerActions.downloadTrack(this, hero) }
             viewLifecycleOwner.lifecycleScope.launch {
                 val bmp = CoverLoader.loadBitmap(hero.artworkUrl)
-                if (bmp != null && _binding != null) {
+                val cur = _binding ?: return@launch
+                if (bmp != null) {
                     val accent = CoverLoader.extractAccentColor(bmp)
-                    binding.discoverHeroContainer.background = GradientDrawable(
+                    cur.discoverHeroContainer.background = GradientDrawable(
                         GradientDrawable.Orientation.TL_BR,
                         intArrayOf(accent, 0xFF141820.toInt()),
                     )
@@ -148,26 +151,27 @@ class DiscoverFragment : Fragment() {
         }
 
         val hasBecause = feed.becauseYouPlayed.isNotEmpty()
-        binding.becauseTitle.isVisible = hasBecause
-        binding.becauseRecycler.isVisible = hasBecause
+        b.becauseTitle.isVisible = hasBecause
+        b.becauseRecycler.isVisible = hasBecause
         if (hasBecause) {
-            binding.becauseTitle.text = feed.becauseYouPlayedLabel ?: "Because you're listening"
+            b.becauseTitle.text = feed.becauseYouPlayedLabel ?: "Because you're listening"
             becauseAdapter.submitList(feed.becauseYouPlayed)
         }
 
-        binding.albumsHeader.isVisible = feed.albums.isNotEmpty()
-        binding.discoverAlbumsRecycler.isVisible = feed.albums.isNotEmpty()
+        b.albumsHeader.isVisible = feed.albums.isNotEmpty()
+        b.discoverAlbumsRecycler.isVisible = feed.albums.isNotEmpty()
         albumAdapter.submitList(feed.albums)
 
-        binding.artistsHeader.isVisible = feed.artists.isNotEmpty()
-        binding.discoverArtistsRecycler.isVisible = feed.artists.isNotEmpty()
+        b.artistsHeader.isVisible = feed.artists.isNotEmpty()
+        b.discoverArtistsRecycler.isVisible = feed.artists.isNotEmpty()
         artistAdapter.submitList(feed.artists)
 
         topTracksAdapter.submitList(feed.tracks)
-        binding.discoverEmpty.isVisible = feed.tracks.isEmpty()
+        b.discoverEmpty.isVisible = feed.tracks.isEmpty()
     }
 
     override fun onDestroyView() {
+        loadJob?.cancel()
         _binding = null
         super.onDestroyView()
     }

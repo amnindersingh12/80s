@@ -126,40 +126,41 @@ class SettingsFragment : Fragment() {
     }
 
     private fun testConnection() {
-        val ctx = requireContext()
+        val ctx = requireContext().applicationContext
         binding.healthStatusText.text = getString(R.string.testing_connection)
         viewLifecycleOwner.lifecycleScope.launch {
-            runCatching { BridgeAppGraph.api(ctx).health() }
+            suspendRunCatching { BridgeAppGraph.api(ctx).health() }
                 .onSuccess { h ->
+                    val b = _binding ?: return@onSuccess
                     val authLabel = when {
                         !h.accessRequired -> "Open"
                         h.authenticated -> "Authenticated"
                         else -> "Wrong / Missing Access Key"
                     }
-                    binding.healthStatusText.text = buildString {
+                    b.healthStatusText.text = buildString {
                         appendLine("Connected (${if (h.demo) "demo" else "live"}, cache: ${h.cache ?: "memory"})")
                         appendLine("Auth: $authLabel")
                         append("Providers: ${h.providers.joinToString(", ")}")
                     }
                 }
                 .onFailure { err ->
-                    binding.healthStatusText.text = "Connection failed: ${err.message}"
+                    _binding?.healthStatusText?.text = "Connection failed: ${err.message}"
                 }
         }
     }
 
     private fun refreshPowerampFolders() {
-        val ctx = requireContext()
+        val ctx = requireContext().applicationContext
         binding.healthStatusText.text = getString(R.string.refreshing_folders)
         viewLifecycleOwner.lifecycleScope.launch {
-            runCatching {
+            suspendRunCatching {
                 val synced = BridgeAppGraph.syncManager(ctx).refreshAll()
                 PowerampHelper.triggerRescan(ctx, null, fromUi = true)
                 synced
             }.onSuccess { count ->
-                binding.healthStatusText.text = getString(R.string.folders_refreshed, count)
+                _binding?.healthStatusText?.text = getString(R.string.folders_refreshed, count)
             }.onFailure { err ->
-                binding.healthStatusText.text = "Refresh failed: ${err.message}"
+                _binding?.healthStatusText?.text = "Refresh failed: ${err.message}"
             }
         }
     }

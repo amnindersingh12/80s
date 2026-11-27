@@ -47,8 +47,10 @@ class SearchDiscoverFragment : Fragment() {
         trackAdapter = TrackAdapter(
             onPlayClick = { t ->
                 BridgePlayerActions.playTrack(this, t) { msg ->
-                    binding.statusBanner.isVisible = msg != null
-                    binding.statusBanner.text = msg.orEmpty()
+                    _binding?.let { b ->
+                        b.statusBanner.isVisible = msg != null
+                        b.statusBanner.text = msg.orEmpty()
+                    }
                 }
             },
             onDownloadClick = { t ->
@@ -178,27 +180,29 @@ class SearchDiscoverFragment : Fragment() {
     }
 
     private fun runSearch(query: String) {
-        val ctx = requireContext()
+        val ctx = requireContext().applicationContext
         lastQuery = query
         searchJob?.cancel()
         searchJob = viewLifecycleOwner.lifecycleScope.launch {
-            binding.recentSection.isVisible = false
-            binding.loadingBar.isVisible = true
-            binding.emptyText.isVisible = false
-            runCatching { BridgeAppGraph.api(ctx).searchCatalog(query, type = activeFilter, limit = 30) }
+            _binding?.recentSection?.isVisible = false
+            _binding?.loadingBar?.isVisible = true
+            _binding?.emptyText?.isVisible = false
+            suspendRunCatching { BridgeAppGraph.api(ctx).searchCatalog(query, type = activeFilter, limit = 30) }
                 .onSuccess { res ->
-                    binding.loadingBar.isVisible = false
+                    val b = _binding ?: return@onSuccess
+                    b.loadingBar.isVisible = false
                     if (res.tracks.isNotEmpty() || res.artists.isNotEmpty() || res.albums.isNotEmpty()) {
                         BridgeAppGraph.prefs(ctx).addRecentSearch(query)
                     }
                     bindResults(res)
                 }
                 .onFailure { err ->
-                    binding.loadingBar.isVisible = false
-                    binding.heroCard.isVisible = false
-                    binding.songsHeaderRow.isVisible = false
-                    binding.emptyText.isVisible = true
-                    binding.emptyText.text = err.message ?: getString(R.string.connection_error)
+                    val b = _binding ?: return@onFailure
+                    b.loadingBar.isVisible = false
+                    b.heroCard.isVisible = false
+                    b.songsHeaderRow.isVisible = false
+                    b.emptyText.isVisible = true
+                    b.emptyText.text = err.message ?: getString(R.string.connection_error)
                 }
         }
     }
@@ -267,6 +271,7 @@ class SearchDiscoverFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        searchJob?.cancel()
         _binding = null
         super.onDestroyView()
     }
