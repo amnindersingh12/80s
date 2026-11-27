@@ -6,6 +6,7 @@ import type { RemoteProviderConfig } from "../config.js";
 import {
   MIME_BY_EXTENSION,
   inferLossless,
+  parseFlacStreamInfo,
   verifyLosslessStream,
   type AudioProvider,
   type JobProgress,
@@ -182,7 +183,7 @@ export class RemoteMediaProvider implements AudioProvider {
       let state = this.readJob(created.data);
       if (state.failed) throw this.jobFailed(state);
       // Already packaged (cache hit upstream): the URL comes straight back.
-      if (state.url && (state.done || !state.jobId)) return this.toSource(state);
+      if (state.url && (state.done || !state.jobId)) return await this.probeSource(this.toSource(state), combined);
       if (!state.jobId) {
         throw new AppError("UPSTREAM_BAD_RESPONSE", "Job creation returned neither a job id nor a URL", { provider: this.name });
       }
@@ -212,7 +213,7 @@ export class RemoteMediaProvider implements AudioProvider {
           if (!state.url) {
             throw new AppError("UPSTREAM_BAD_RESPONSE", "Job finished but no download URL was returned", { provider: this.name });
           }
-          return this.toSource(state);
+          return await this.probeSource(this.toSource(state), combined);
         }
       }
     } catch (err) {
@@ -285,9 +286,52 @@ export class RemoteMediaProvider implements AudioProvider {
     return new AppError("JOB_FAILED", `The media server could not prepare this track${detail}`, { provider: this.name });
   }
 
+  private async probeSource(source: StreamSource, signal: AbortSignal): Promise<StreamSource> {
+    let res: Response;
+    try {
+      const authHeaders = await this.authorizeStream(source);
+      res = await this.fetchFn(source.url, {
+        method: "GET",
+        headers: { ...authHeaders, range: "bytes=0-63" },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(Math.min(4_000, this.cfg.requestTimeoutMs))]),
+        redirect: "follow",
+      });
+    } catch {
+      return source;
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return source;
+    }
+    const headBytes = new Uint8Array(await res.arrayBuffer().catch(() => new ArrayBuffer(0)));
+    const check = verifyLosslessStream(res.headers.get("content-type"), headBytes.length ? headBytes : undefined);
+    if (!check.ok) {
+      throw new AppError("UPSTREAM_UNAVAILABLE", check.reason ?? "Lossy stream rejected (FLAC/ALAC only)", {
+        provider: this.name,
+      });
+    }
+    const rangeMatch = res.headers.get("content-range")?.match(/\/(\d+)\s*$/);
+    const lenHdr = res.headers.get("content-length");
+    const parsedLen = rangeMatch ? Number(rangeMatch[1]) : res.status === 200 && lenHdr ? Number(lenHdr) : undefined;
+    const contentLength = parsedLen !== undefined && Number.isFinite(parsedLen) && parsedLen > 0 ? parsedLen : undefined;
+    const flacInfo = headBytes.length ? parseFlacStreamInfo(headBytes) : undefined;
+    return {
+      ...source,
+      ...(check.mimeType ? { mimeType: check.mimeType } : {}),
+      ...(check.extension ? { extension: check.extension } : {}),
+      ...(check.codec ? { codec: check.codec } : {}),
+      ...(contentLength !== undefined ? { contentLength } : {}),
+      ...(flacInfo?.bitDepth ? { bitDepth: flacInfo.bitDepth } : {}),
+      ...(flacInfo?.sampleRate ? { sampleRate: flacInfo.sampleRate } : {}),
+    };
+  }
+
   private toSource(state: JobState): StreamSource {
     const url = state.url as string;
     const ext = extensionFromUrl(url) ?? "flac";
+    if (["mp3", "aac", "ogg", "opus", "vorbis", "webm"].includes(ext)) {
+      throw new AppError("UPSTREAM_UNAVAILABLE", `Lossy extension ".${ext}" rejected (FLAC/ALAC only)`, { provider: this.name });
+    }
     return {
       url,
       expiresAt: state.expiresAt ?? expiryFromSignedUrl(url),
@@ -391,6 +435,7 @@ export class RemoteMediaProvider implements AudioProvider {
       bitDepth: pickNumber(raw, f.bitDepth),
       sampleRate: normalizeSampleRate(pickNumber(raw, f.sampleRate)),
       bitrateKbps: pickNumber(raw, f.bitrateKbps),
+      fileSize: pickNumber(raw, "fileSize|file_size|size"),
       year,
       trackNumber: pickNumber(raw, f.trackNumber),
       isrc: pickString(raw, f.isrc),

@@ -2,10 +2,15 @@ name: Web player (web/)
 
 on:
     push:
+        branches:
+            - main
+            - feature/streaming-api
         paths:
             - "web/**"
             - ".github/workflows/web.yml"
     pull_request:
+        branches:
+            - main
         paths:
             - "web/**"
             - ".github/workflows/web.yml"

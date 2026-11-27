@@ -103,7 +103,12 @@ export class ProviderChain {
       try {
         const { tracks, cached } = await p.searchWithMeta(query, options);
         this.recordSuccess(p.name);
-        return { tracks: tracks.filter((t) => t.lossless).map(toPublic), provider: p.name, fallback: p !== this.primary, cached };
+        return {
+          tracks: tracks.filter((t) => t.lossless && !["mp3", "aac", "ogg", "opus", "vorbis", "webm"].includes(t.format?.toLowerCase() ?? "")).map(toPublic),
+          provider: p.name,
+          fallback: p !== this.primary,
+          cached,
+        };
       } catch (err) {
         lastErr = err;
         if (!isFailoverEligible(err)) throw err;

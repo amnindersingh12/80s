@@ -29,6 +29,10 @@ export interface StreamSource {
   extension?: string;
   /** Total byte length learned during stream probing (avoids an extra HEAD round-trip). */
   contentLength?: number;
+  codec?: "FLAC" | "ALAC";
+  bitDepth?: number;
+  sampleRate?: number;
+  bitrateKbps?: number;
 }
 
 export interface SearchOptions {
@@ -132,12 +136,44 @@ export function verifyLosslessStream(
   return { ok: true, codec: "FLAC", mimeType: "audio/flac", extension: "flac" };
 }
 
+export function parseFlacStreamInfo(headBytes: Uint8Array): { bitDepth?: number; sampleRate?: number } | undefined {
+  if (
+    headBytes.length < 22 ||
+    headBytes[0] !== 0x66 ||
+    headBytes[1] !== 0x4c ||
+    headBytes[2] !== 0x61 ||
+    headBytes[3] !== 0x43
+  ) {
+    return undefined;
+  }
+  const blockType = headBytes[4]! & 0x7f;
+  if (blockType !== 0) return undefined;
+  const sampleRate = (headBytes[18]! << 12) | (headBytes[19]! << 4) | (headBytes[20]! >>> 4);
+  const bitDepth = (((headBytes[20]! & 0x01) << 4) | (headBytes[21]! >>> 4)) + 1;
+  return {
+    ...(sampleRate > 0 ? { sampleRate } : {}),
+    ...(bitDepth >= 8 && bitDepth <= 32 ? { bitDepth } : {}),
+  };
+}
+
 export function normalizeLosslessMetadata(track: ProviderTrack): ProviderTrack {
   const fmt = track.format?.toLowerCase();
   const codec: "FLAC" | "ALAC" = fmt === "alac" || fmt === "m4a" ? "ALAC" : "FLAC";
+  const durationSec = track.durationSec ?? (track.durationMs !== undefined ? Math.round(track.durationMs / 1000) : undefined);
+  const durationMs = track.durationMs ?? (durationSec !== undefined ? Math.round(durationSec * 1000) : undefined);
+  const artworkUrl = track.artworkUrl ?? track.coverUrl;
+  const coverUrl = track.coverUrl ?? track.artworkUrl;
+  const bitrateKbps =
+    track.bitrateKbps ??
+    (track.fileSize && durationSec && durationSec > 0 ? Math.round((track.fileSize * 8) / durationSec / 1000) : undefined);
   const isHiRes = (track.bitDepth !== undefined && track.bitDepth > 16) || (track.sampleRate !== undefined && track.sampleRate > 48_000);
   return {
     ...track,
+    ...(durationSec !== undefined ? { durationSec } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(coverUrl ? { coverUrl } : {}),
+    ...(artworkUrl ? { artworkUrl } : {}),
+    ...(bitrateKbps !== undefined ? { bitrateKbps } : {}),
     format: track.format ?? (codec === "ALAC" ? "alac" : "flac"),
     codec: track.codec ?? codec,
     lossless: true,

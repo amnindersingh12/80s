@@ -191,7 +191,42 @@ describe("static client serving", () => {
 
     const home = await a.inject("/api/home");
     expect(home.statusCode).toBe(200);
-    expect(home.json().genre).toBe("Punjabi Pop");
-    expect(home.json().seed.tag).toBe("punjabi pop");
+    expect(home.json().genre).toBe("mixed");
+    expect(home.json().seed.tag).toBe("mixed");
+
+    const popHome = await a.inject("/api/home?genre=pop");
+    expect(popHome.statusCode).toBe(200);
+    expect(popHome.json().genre).toBe("pop");
+    expect(popHome.json().seed.tag).toBe("pop");
+
+    const seedTrackHome = await a.inject("/api/home?seedArtist=Radiohead&seedTrack=Karma+Police");
+    expect(seedTrackHome.statusCode).toBe(200);
+    expect(seedTrackHome.json().seed).toMatchObject({ type: "track", artist: "Radiohead", title: "Karma Police" });
+    expect(resolved.json().signedStreamUrl).toMatch(/^\/api\/stream\/demo%3Ademo-12/);
+  });
+
+  it("allows GET/HEAD /api/stream/:id via signed ?st= token while keeping other endpoints gated", async () => {
+    const a = await make({ APP_ACCESS_KEY: "correct horse battery staple" });
+    const session = await a.inject({ method: "POST", url: "/api/session", payload: { key: "correct horse battery staple" } });
+    const cookie = String(session.headers["set-cookie"]).split(";")[0]!;
+
+    const prep = await a.inject({ method: "POST", url: "/api/tracks/demo:demo-01/prepare", headers: { cookie } });
+    expect(prep.statusCode).toBe(200);
+    const signedUrl = prep.json().signedStreamUrl as string;
+    expect(signedUrl).toContain("?st=");
+
+    const headRes = await a.inject({ method: "HEAD", url: signedUrl });
+    expect(headRes.statusCode).toBe(200);
+
+    const streamRes = await a.inject({ url: signedUrl, headers: { range: "bytes=0-43" } });
+    expect(streamRes.statusCode).toBe(206);
+    expect(streamRes.rawPayload.subarray(0, 4).toString()).toBe("RIFF");
+
+    // Token is bound to track id and strictly scoped to /api/stream/:id
+    const token = signedUrl.split("?st=")[1]!;
+    expect((await a.inject(`/api/stream/demo:demo-02?st=${token}`)).statusCode).toBe(401);
+    expect((await a.inject(`/api/search?q=karma&st=${token}`)).statusCode).toBe(401);
+    expect((await a.inject(`/api/download/demo:demo-01?st=${token}`)).statusCode).toBe(401);
+    expect((await a.inject(`/api/stream/demo:demo-01?st=1.bad`)).statusCode).toBe(401);
   });
 });

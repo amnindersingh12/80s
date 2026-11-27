@@ -133,6 +133,22 @@ describe("GET /api/stream/:id — Range pass-through", () => {
     expect(res.json().error.code).toBe("UPSTREAM_UNAVAILABLE");
   });
 
+  it("supports 2 concurrent ranged connections per track (Poweramp crossfade pre-buffering)", async () => {
+    const [r1, r2] = await Promise.all([
+      app.inject({ url: "/api/stream/remote:t1", headers: { range: "bytes=0-99" } }),
+      app.inject({ url: "/api/stream/remote:t1", headers: { range: "bytes=50000-50099" } }),
+    ]);
+    expect(r1.statusCode).toBe(206);
+    expect(r2.statusCode).toBe(206);
+    expect(r1.headers["accept-ranges"]).toBe("bytes");
+    expect(r2.headers["accept-ranges"]).toBe("bytes");
+    expect(r1.headers["content-length"]).toBe("100");
+    expect(r2.headers["content-length"]).toBe("100");
+    expect(r1.headers["content-type"]).toBe("audio/flac");
+    expect(r1.rawPayload.equals(audio.subarray(0, 100))).toBe(true);
+    expect(r2.rawPayload.equals(audio.subarray(50000, 50100))).toBe(true);
+  });
+
   it("aborts the upstream transfer when the browser disconnects", async () => {
     up.state.cdnSlowStreamMs = 15;
     const address = await app.listen({ port: 0, host: "127.0.0.1" });

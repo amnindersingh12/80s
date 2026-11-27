@@ -27,6 +27,8 @@ import { sleep } from "./lib/http.js";
 import { bestMatch } from "./lib/text.js";
 import { renderDemoCover } from "./providers/mock.js";
 import type { AppServices } from "./services.js";
+import { buildSignedStreamUrl, verifyStreamToken } from "./lib/streamToken.js";
+import { fetchLyrics } from "./services/lyrics.js";
 import { proxyAudio } from "./services/stream.js";
 
 export const SESSION_COOKIE = "eighties_session";
@@ -125,6 +127,20 @@ export async function buildApp({ config, services, logger = false, env = process
     app.addHook("onRequest", async (request) => {
       const path = request.url.split("?")[0] ?? "";
       if (!path.startsWith("/api/") || path === "/api/health" || path === "/api/session") return;
+      if ((request.method === "GET" || request.method === "HEAD") && path.startsWith("/api/stream/")) {
+        const rawSeg = path.slice("/api/stream/".length);
+        if (rawSeg.length > 0 && !rawSeg.includes("/")) {
+          const st = new URLSearchParams(request.url.split("?")[1] ?? "").get("st");
+          if (st) {
+            try {
+              const id = decodeURIComponent(rawSeg);
+              if (verifyStreamToken(id, st, accessKey)) return;
+            } catch {
+              /* malformed encoding falls through to normal auth check */
+            }
+          }
+        }
+      }
       if (!isAuthenticated(request)) throw new AppError("ACCESS_REQUIRED", "Unlock the player with the access key first");
     });
   }
@@ -230,11 +246,15 @@ export async function buildApp({ config, services, logger = false, env = process
   });
 
   // ------------------------------------------------------ prepare jobs ---
+  const withSignedUrl = (status: PrepareStatus): PrepareStatus =>
+    status.state === "ready" ? { ...status, signedStreamUrl: buildSignedStreamUrl(status.id, accessKey) } : status;
+
   const sendStatus = (reply: FastifyReply, status: PrepareStatus) => {
-    if (status.state === "error" && status.error) {
-      return reply.code(statusFor(status.error.code)).send(status);
+    const out = withSignedUrl(status);
+    if (out.state === "error" && out.error) {
+      return reply.code(statusFor(out.error.code)).send(out);
     }
-    return reply.code(status.state === "preparing" ? 202 : 200).send(status);
+    return reply.code(out.state === "preparing" ? 202 : 200).send(out);
   };
 
   app.post<{ Params: { id: string } }>("/api/tracks/:id/prepare", { schema: { params: idParams } }, async (request, reply) => {
@@ -266,14 +286,35 @@ export async function buildApp({ config, services, logger = false, env = process
     async (request): Promise<ResolveTrackResponse> => {
       const { title, artist } = request.body;
       const { tracks } = await chain.search(`${artist.trim()} ${title.trim()}`, { limit: 10 });
-      const track = bestMatch({ title, artist }, tracks)?.candidate ?? tracks[0];
-      if (!track) throw new AppError("NOT_FOUND", `No playable match for "${artist} - ${title}"`);
-      const pending = tracker.ensure(track.id).then(
+      const matched = bestMatch({ title, artist }, tracks)?.candidate ?? tracks[0];
+      if (!matched) throw new AppError("NOT_FOUND", `No playable match for "${artist} - ${title}"`);
+      const pending = tracker.ensure(matched.id).then(
         () => undefined,
         () => undefined,
       );
-      await Promise.race([pending, sleep(500)]);
-      return { track, prepare: tracker.status(track.id) };
+      await Promise.race([pending, sleep(1_500)]);
+      const prepare = withSignedUrl(tracker.status(matched.id));
+      const signedStreamUrl = prepare.signedStreamUrl ?? buildSignedStreamUrl(matched.id, accessKey);
+      const durationSec = matched.durationSec;
+      const fileSize = matched.fileSize ?? prepare.fileSize;
+      const bitrateKbps =
+        matched.bitrateKbps ??
+        prepare.bitrateKbps ??
+        (fileSize && durationSec && durationSec > 0 ? Math.round((fileSize * 8) / durationSec / 1000) : undefined);
+      const bitDepth = matched.bitDepth ?? prepare.bitDepth;
+      const sampleRate = matched.sampleRate ?? prepare.sampleRate;
+      const codec = matched.codec ?? prepare.codec ?? "FLAC";
+      const isHiRes = (bitDepth !== undefined && bitDepth > 16) || (sampleRate !== undefined && sampleRate > 48_000);
+      const enrichedTrack = {
+        ...matched,
+        codec,
+        qualityTier: isHiRes ? ("HI-RES LOSSLESS" as const) : ("LOSSLESS" as const),
+        ...(bitDepth ? { bitDepth } : {}),
+        ...(sampleRate ? { sampleRate } : {}),
+        ...(fileSize !== undefined ? { fileSize } : {}),
+        ...(bitrateKbps !== undefined ? { bitrateKbps } : {}),
+      };
+      return { track: enrichedTrack, prepare, signedStreamUrl };
     },
   );
 
@@ -341,7 +382,7 @@ export async function buildApp({ config, services, logger = false, env = process
     },
   );
 
-  app.get<{ Querystring: { seedArtist?: string; genre?: string; limit?: number } }>(
+  app.get<{ Querystring: { seedArtist?: string; seedTrack?: string; seedTitle?: string; genre?: string; limit?: number } }>(
     "/api/home",
     {
       schema: {
@@ -349,6 +390,8 @@ export async function buildApp({ config, services, logger = false, env = process
           type: "object",
           properties: {
             seedArtist: { type: "string", maxLength: 200 },
+            seedTrack: { type: "string", maxLength: 300 },
+            seedTitle: { type: "string", maxLength: 200 },
             genre: { type: "string", maxLength: 100 },
             limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
           },
@@ -356,11 +399,55 @@ export async function buildApp({ config, services, logger = false, env = process
       },
     },
     async (request): Promise<HomeResponse> => {
-      const genre = request.query.genre?.trim() || "Punjabi Pop";
+      const genre = request.query.genre?.trim() || "mixed";
       const seedArtist = request.query.seedArtist?.trim() || undefined;
-      const seed: RecommendationSeed = seedArtist ? { type: "artist", artist: seedArtist } : { type: "tag", tag: genre };
+      const seedTrack = request.query.seedTrack?.trim() || undefined;
+      const seedTitle = request.query.seedTitle?.trim() || undefined;
+      let seed: RecommendationSeed;
+      if (seedTrack) {
+        if (seedTrack.includes(":") && !seedTrack.includes(" ")) {
+          seed = { type: "track", trackId: seedTrack, ...(seedArtist ? { artist: seedArtist } : {}), ...(seedTitle ? { title: seedTitle } : {}) };
+        } else if (seedArtist) {
+          seed = { type: "track", artist: seedArtist, title: seedTrack };
+        } else if (seedTrack.includes(" - ")) {
+          const [a, ...rest] = seedTrack.split(" - ");
+          seed = { type: "track", artist: a!.trim(), title: rest.join(" - ").trim() };
+        } else {
+          seed = { type: "artist", artist: seedTrack };
+        }
+      } else if (seedArtist) {
+        seed = { type: "artist", artist: seedArtist };
+      } else {
+        seed = { type: "tag", tag: genre };
+      }
       const rec = await engine.recommend(seed, { limit: request.query.limit });
       return { genre, ...(seedArtist ? { seedArtist } : {}), ...rec };
+    },
+  );
+
+  // ------------------------------------------------------------- lyrics ---
+  app.get<{ Querystring: { track?: string; title?: string; artist?: string; album?: string; duration?: string } }>(
+    "/api/lyrics",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            track: { type: "string", maxLength: 300 },
+            title: { type: "string", maxLength: 300 },
+            artist: { type: "string", maxLength: 300 },
+            album: { type: "string", maxLength: 300 },
+            duration: { type: "string", maxLength: 32 },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const track = (request.query.track ?? request.query.title ?? "").trim();
+      const artist = (request.query.artist ?? "").trim();
+      const album = request.query.album?.trim() || undefined;
+      const durNum = request.query.duration ? Number(request.query.duration) : undefined;
+      return fetchLyrics({ track, artist, album, durationSec: durNum });
     },
   );
 

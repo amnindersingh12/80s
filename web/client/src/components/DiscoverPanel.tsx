@@ -10,18 +10,19 @@ import { Icon, Spinner } from "./Icons";
 import { TrackListSkeleton, TrackRow } from "./TrackRow";
 
 export const GENRES = [
-  "Punjabi Pop",
-  "Bhangra",
+  "Mixed",
+  "Pop",
   "Hip-Hop",
+  "Rock",
   "Indie",
+  "Electronic",
+  "R&B",
+  "Jazz",
+  "Punjabi Pop",
+  "Bollywood",
   "Synthwave",
   "80s",
   "Lo-fi",
-  "Bollywood",
-  "R&B",
-  "Electronic",
-  "Jazz",
-  "Classical",
 ];
 
 const SOURCE_LABEL: Record<RecommendationSource, string> = { lastfm: "Last.fm", listenbrainz: "ListenBrainz", musicbrainz: "MusicBrainz" };
@@ -46,7 +47,7 @@ export function DiscoverPanel({ onSearch }: { onSearch: (q: string) => void }) {
   const player = usePlayer();
   const current = player.current?.track;
   const [follow, setFollow] = useState(() => storage.get(`${SEED_KEY}.follow`, true));
-  const [manual, setManual] = useState<RecommendationSeed>(() => storage.get(SEED_KEY, { type: "tag", tag: "punjabi pop" }));
+  const [manual, setManual] = useState<RecommendationSeed>(() => storage.get(SEED_KEY, { type: "tag", tag: "mixed" }));
   const [load, setLoad] = useState<Load>({ kind: "idle" });
   const [attempt, setAttempt] = useState(0);
   const cache = useRef(new Map<string, RecommendationsResponse>());

@@ -16,8 +16,10 @@ export interface Track {
   artist: string;
   album?: string;
   durationSec?: number;
+  durationMs?: number;
   /** Either a public https URL or a same-origin `/api/cover/:id` proxy path. */
   coverUrl?: string;
+  artworkUrl?: string;
   /** Container / codec hint, lower-case (`flac`, `wav`, `alac`, `mp3`). */
   format?: string;
   codec?: "FLAC" | "ALAC";
@@ -26,6 +28,7 @@ export interface Track {
   bitDepth?: number;
   sampleRate?: number;
   bitrateKbps?: number;
+  fileSize?: number;
   year?: number;
   trackNumber?: number;
   isrc?: string;
@@ -55,6 +58,13 @@ export interface PrepareStatus {
   /** Provider that produced the stream URL (differs from the track's on failover). */
   servedBy?: string;
   fallback?: boolean;
+  /** Short-lived stream URL (`/api/stream/:id?st=...`) usable without X-Access-Key header. */
+  signedStreamUrl?: string;
+  fileSize?: number;
+  codec?: "FLAC" | "ALAC";
+  bitDepth?: number;
+  sampleRate?: number;
+  bitrateKbps?: number;
   error?: ApiErrorBody["error"];
 }
 
@@ -118,7 +128,9 @@ export interface RecommendedTrack {
   artist: string;
   album?: string;
   durationSec?: number;
+  durationMs?: number;
   coverUrl?: string;
+  artworkUrl?: string;
   mbid?: string;
   score: number;
   sources: RecommendationSource[];
@@ -163,6 +175,14 @@ export interface ResolveTrackRequest {
 export interface ResolveTrackResponse {
   track: Track;
   prepare: PrepareStatus;
+  signedStreamUrl: string;
+}
+
+export interface LyricsResponse {
+  syncedLyrics: string | null;
+  plainLyrics: string | null;
+  instrumental: boolean;
+  source: "lrclib" | "none";
 }
 
 export interface HomeResponse extends RecommendationsResponse {

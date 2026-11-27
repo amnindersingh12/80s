@@ -29,3 +29,8 @@ local.properties
 /music/play/release/*
 /music/foss/release/*
 /blur/build/*
+/node_modules/
+poweramp-bridge/.gradle
+poweramp-bridge/build
+poweramp-bridge/local.properties
+*.apk

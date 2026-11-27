@@ -1,6 +1,15 @@
 import { AppError } from "../errors.js";
 import { parseRetryAfterMs, requestJson, type FetchFn } from "../lib/http.js";
-import { verifyLosslessStream, type AudioProvider, type ProviderTrack, type SearchOptions, type StreamOptions, type StreamSource } from "./types.js";
+import {
+  inferLossless,
+  parseFlacStreamInfo,
+  verifyLosslessStream,
+  type AudioProvider,
+  type ProviderTrack,
+  type SearchOptions,
+  type StreamOptions,
+  type StreamSource,
+} from "./types.js";
 
 export interface HiFiPoolOptions {
   instances: string[];
@@ -18,10 +27,31 @@ interface RawTracksItem {
   artistNames?: string[];
   artists?: Array<{ name?: string }>;
   artist?: { name?: string } | string;
-  album?: { title?: string; cover?: string };
+  album?: { title?: string; name?: string; cover?: string; releaseDate?: string; year?: number };
   albumTitle?: string;
   artwork?: string;
+  artworkUrl?: string;
+  cover?: string;
+  coverUrl?: string;
   duration?: number;
+  durationMs?: number;
+  trackNumber?: number;
+  track_number?: number;
+  year?: number;
+  releaseDate?: string;
+  release_date?: string;
+  format?: string;
+  codec?: string;
+  audioQuality?: string;
+  quality?: string;
+  bitDepth?: number;
+  bit_depth?: number;
+  sampleRate?: number;
+  sample_rate?: number;
+  bitrateKbps?: number;
+  fileSize?: number;
+  file_size?: number;
+  size?: number;
   isrc?: string;
 }
 
@@ -119,12 +149,28 @@ export class HiFiPoolProvider implements AudioProvider {
             continue;
           }
           const rangeMatch = res.headers.get("content-range")?.match(/\/(\d+)\s*$/);
-          const contentLength = rangeMatch ? Number(rangeMatch[1]) : undefined;
+          const lenHdr = res.headers.get("content-length");
+          const parsedLen = rangeMatch ? Number(rangeMatch[1]) : res.status === 200 && lenHdr ? Number(lenHdr) : undefined;
+          const contentLength = parsedLen !== undefined && Number.isFinite(parsedLen) && parsedLen > 0 ? parsedLen : undefined;
+          const flacInfo = parseFlacStreamInfo(headBytes);
+          const cachedMeta = this.metaCache.get(id);
+          if (cachedMeta) {
+            this.metaCache.set(id, {
+              ...cachedMeta,
+              ...(check.codec ? { codec: check.codec } : {}),
+              ...(flacInfo?.bitDepth ? { bitDepth: cachedMeta.bitDepth ?? flacInfo.bitDepth } : {}),
+              ...(flacInfo?.sampleRate ? { sampleRate: cachedMeta.sampleRate ?? flacInfo.sampleRate } : {}),
+              ...(contentLength !== undefined ? { fileSize: cachedMeta.fileSize ?? contentLength } : {}),
+            });
+          }
           this.openUntil.delete(base);
           return {
             url: streamUrl,
             mimeType: check.mimeType ?? "audio/flac",
             extension: check.extension ?? "flac",
+            ...(check.codec ? { codec: check.codec } : {}),
+            ...(flacInfo?.bitDepth ? { bitDepth: flacInfo.bitDepth } : {}),
+            ...(flacInfo?.sampleRate ? { sampleRate: flacInfo.sampleRate } : {}),
             ...(contentLength !== undefined ? { contentLength } : {}),
           };
         }
@@ -167,21 +213,49 @@ export class HiFiPoolProvider implements AudioProvider {
   private mapTrack(raw: RawTracksItem): ProviderTrack | null {
     const id = raw.trackId ?? raw.id;
     if (!id || !raw.title) return null;
+    const format = (raw.format ?? raw.codec)?.toLowerCase().replace(/^\./, "");
+    const quality = raw.quality ?? raw.audioQuality;
+    if (!inferLossless(format, quality, true)) return null;
+
     const artist =
       (Array.isArray(raw.artistNames) && raw.artistNames.length ? raw.artistNames.join(", ") : undefined) ??
       (Array.isArray(raw.artists) && raw.artists.length ? raw.artists.map((a) => a.name).filter(Boolean).join(", ") : undefined) ??
       (typeof raw.artist === "string" ? raw.artist : raw.artist?.name) ??
       "Unknown artist";
-    const dur = typeof raw.duration === "number" ? (raw.duration > 36_000 ? Math.round(raw.duration / 1000) : Math.round(raw.duration)) : undefined;
+    const durMs =
+      typeof raw.durationMs === "number" && raw.durationMs > 0
+        ? Math.round(raw.durationMs)
+        : typeof raw.duration === "number" && raw.duration > 0
+          ? Math.round(raw.duration > 36_000 ? raw.duration : raw.duration * 1000)
+          : undefined;
+    const dur = durMs !== undefined ? Math.round(durMs / 1000) : undefined;
+    const album = raw.album?.title ?? raw.album?.name ?? raw.albumTitle;
+    const coverUrl = raw.artworkUrl ?? raw.coverUrl ?? raw.artwork ?? raw.cover ?? raw.album?.cover;
+    const releaseStr = raw.releaseDate ?? raw.release_date ?? raw.album?.releaseDate;
+    const yearMatch = releaseStr?.match(/^(\d{4})/);
+    const year = raw.year ?? raw.album?.year ?? (yearMatch ? Number(yearMatch[1]) : undefined);
+    const trackNumber = raw.trackNumber ?? raw.track_number;
+    const bitDepth = raw.bitDepth ?? raw.bit_depth;
+    const rawSr = raw.sampleRate ?? raw.sample_rate;
+    const sampleRate = rawSr !== undefined ? (rawSr < 1000 ? Math.round(rawSr * 1000) : Math.round(rawSr)) : undefined;
+    const fileSize = raw.fileSize ?? raw.file_size ?? raw.size;
     const track: ProviderTrack = {
       id: String(id),
       provider: this.name,
       title: raw.title,
       artist,
-      ...(raw.album?.title || raw.albumTitle ? { album: raw.album?.title ?? raw.albumTitle } : {}),
+      ...(album ? { album } : {}),
+      ...(year ? { year } : {}),
+      ...(trackNumber ? { trackNumber } : {}),
       ...(dur !== undefined ? { durationSec: dur } : {}),
-      ...(raw.artwork ? { coverUrl: raw.artwork } : {}),
-      format: "flac",
+      ...(durMs !== undefined ? { durationMs: durMs } : {}),
+      ...(coverUrl ? { coverUrl, artworkUrl: coverUrl } : {}),
+      ...(bitDepth ? { bitDepth } : {}),
+      ...(sampleRate ? { sampleRate } : {}),
+      ...(raw.bitrateKbps ? { bitrateKbps: raw.bitrateKbps } : {}),
+      ...(fileSize ? { fileSize } : {}),
+      format: format ?? "flac",
+      codec: format === "alac" || format === "m4a" ? "ALAC" : "FLAC",
       lossless: true,
       ...(raw.isrc ? { isrc: raw.isrc } : {}),
     };

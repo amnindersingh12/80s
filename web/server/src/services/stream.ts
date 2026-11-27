@@ -89,18 +89,12 @@ export async function proxyAudio(
 
   if (!res.ok && res.status !== 416) {
     await res.body?.cancel().catch(() => undefined);
+    reply.raw.off("close", onClose);
     throw new AppError("STREAM_UNAVAILABLE", `The audio host answered HTTP ${res.status}`, {
       upstreamStatus: res.status,
       provider: resolved.servedBy.name,
     });
   }
-
-  reply.code(res.status);
-  for (const name of PASSTHROUGH_HEADERS) {
-    const v = res.headers.get(name);
-    if (v !== null) reply.header(name, v);
-  }
-  if (res.status === 206 && !res.headers.has("accept-ranges")) reply.header("accept-ranges", "bytes");
 
   const upstreamType = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
   const losslessCheck = verifyLosslessStream(upstreamType);
@@ -111,23 +105,25 @@ export async function proxyAudio(
       provider: resolved.servedBy.name,
     });
   }
+
   const ext = resolved.source.extension ?? extensionForMime(upstreamType) ?? "flac";
   const contentType = GENERIC_TYPES.has(upstreamType)
     ? (resolved.source.mimeType ?? MIME_BY_EXTENSION[ext] ?? "audio/flac")
     : (res.headers.get("content-type") as string);
-  reply
-    .header("content-type", contentType)
-    .header("cache-control", "private, max-age=3600, no-transform")
-    .header("x-content-type-options", "nosniff")
-    .header("x-served-by", resolved.servedBy.name);
-
-  if (mode === "download") {
-    reply.header("content-disposition", contentDisposition(await downloadName(deps.chain, id, ext, request.query)));
-  }
 
   if (isHead) {
     await res.body?.cancel().catch(() => undefined);
     reply.raw.off("close", onClose);
+    reply.code(res.status);
+    for (const name of PASSTHROUGH_HEADERS) {
+      const v = res.headers.get(name);
+      if (v !== null) reply.header(name, v);
+    }
+    reply
+      .header("content-type", contentType)
+      .header("cache-control", "private, max-age=3600, no-transform")
+      .header("x-content-type-options", "nosniff")
+      .header("x-served-by", resolved.servedBy.name);
     const total = totalFromContentRange(res.headers.get("content-range"));
     if (res.status === 206) {
       reply.code(200).removeHeader("content-range");
@@ -138,43 +134,65 @@ export async function proxyAudio(
     return reply.send();
   }
 
-  if (!res.body) {
+  // Peek first chunk on start-of-file streams to block masked lossy payloads BEFORE sending headers.
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let firstChunk: Uint8Array | undefined;
+  if (res.body) {
+    reader = res.body.getReader();
+    const firstRead = await reader.read().catch(() => ({ done: true as const, value: undefined }));
+    firstChunk = firstRead.value;
+    if (firstChunk && (!rangeHeader || rangeHeader.startsWith("bytes=0-"))) {
+      const magicCheck = verifyLosslessStream(upstreamType, firstChunk);
+      if (!magicCheck.ok) {
+        await reader.cancel().catch(() => undefined);
+        reply.raw.off("close", onClose);
+        throw new AppError("STREAM_UNAVAILABLE", magicCheck.reason ?? "Only lossless FLAC/ALAC streams are supported", {
+          provider: resolved.servedBy.name,
+        });
+      }
+    }
+  }
+
+  reply.code(res.status);
+  for (const name of PASSTHROUGH_HEADERS) {
+    const v = res.headers.get(name);
+    if (v !== null) reply.header(name, v);
+  }
+  if (res.status === 206 && !res.headers.has("accept-ranges")) reply.header("accept-ranges", "bytes");
+  reply
+    .header("content-type", contentType)
+    .header("cache-control", "private, max-age=3600, no-transform")
+    .header("x-content-type-options", "nosniff")
+    .header("x-served-by", resolved.servedBy.name);
+
+  if (mode === "download") {
+    reply.header("content-disposition", contentDisposition(await downloadName(deps.chain, id, ext, request.query)));
+  }
+
+  if (!res.body || !reader) {
     reply.raw.off("close", onClose);
     return reply.send();
   }
 
-  // Peek first chunk on start-of-file streams to block masked lossy payloads (e.g. MP3 sent as audio/flac).
-  const reader = res.body.getReader();
-  const firstRead = await reader.read().catch(() => ({ done: true as const, value: undefined }));
-  const firstChunk = firstRead.value;
-  if (firstChunk && (!rangeHeader || rangeHeader.startsWith("bytes=0-"))) {
-    const magicCheck = verifyLosslessStream(upstreamType, firstChunk);
-    if (!magicCheck.ok) {
-      await reader.cancel().catch(() => undefined);
-      reply.raw.off("close", onClose);
-      throw new AppError("STREAM_UNAVAILABLE", magicCheck.reason ?? "Only lossless FLAC/ALAC streams are supported", {
-        provider: resolved.servedBy.name,
-      });
-    }
-  }
-
+  const activeReader = reader;
+  const headChunk = firstChunk;
   async function* chunkStream() {
-    if (firstChunk) yield firstChunk;
+    if (headChunk) yield headChunk;
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await activeReader.read();
         if (done) break;
         if (value) yield value;
       }
     } finally {
-      reader.releaseLock();
+      activeReader.releaseLock();
     }
   }
 
   const body = Readable.from(chunkStream());
   // If the browser hangs up mid-transfer, stop pulling bytes from the CDN.
   clientGone.signal.addEventListener("abort", () => {
-    reader.cancel().catch(() => undefined);
+    activeReader.cancel().catch(() => undefined);
     body.destroy();
   }, { once: true });
   body.on("error", () => undefined);

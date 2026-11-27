@@ -135,9 +135,18 @@ describe("ProviderChain multi-provider cooldown & RemoteMediaProvider rate limit
     expect(resolved.fallback).toBe(true);
     expect(resolved.servedBy.name).toBe("backup");
 
-    const { verifyLosslessStream } = await import("../src/providers/types.js");
+    const { verifyLosslessStream, parseFlacStreamInfo } = await import("../src/providers/types.js");
     expect(verifyLosslessStream("audio/aac").ok).toBe(false);
     expect(verifyLosslessStream("audio/mpeg").ok).toBe(false);
     expect(verifyLosslessStream("audio/flac", new Uint8Array([0x66, 0x4c, 0x61, 0x43])).ok).toBe(true);
+    // fLaC + STREAMINFO header encoding 96 kHz / 24-bit stereo
+    const flac2496 = new Uint8Array(22);
+    flac2496.set([0x66, 0x4c, 0x61, 0x43, 0x00, 0x00, 0x00, 0x22]);
+    // 96000 = 0x17700 -> b18=0x17, b19=0x70, b20=(0x0<<4)|(1<<1)|1 = 0x03, b21=(7<<4)=0x70 -> bitDepth = 23+1 = 24
+    flac2496[18] = 0x17;
+    flac2496[19] = 0x70;
+    flac2496[20] = 0x03;
+    flac2496[21] = 0x70;
+    expect(parseFlacStreamInfo(flac2496)).toEqual({ sampleRate: 96000, bitDepth: 24 });
   });
 });

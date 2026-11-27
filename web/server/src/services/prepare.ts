@@ -18,7 +18,12 @@ export class PrepareTracker {
 
   constructor(
     private readonly chain: ProviderChain,
-    private readonly options: { retainMs?: number; maxEntries?: number; now?: () => number } = {},
+    private readonly options: {
+      retainMs?: number;
+      maxEntries?: number;
+      now?: () => number;
+      signUrl?: (id: string) => string;
+    } = {},
   ) {}
 
   private get now(): number {
@@ -64,6 +69,11 @@ export class PrepareTracker {
             elapsedMs: this.now - startedAt,
             servedBy: resolved.servedBy.name,
             fallback: resolved.fallback,
+            ...(resolved.source.contentLength !== undefined ? { fileSize: resolved.source.contentLength } : {}),
+            ...(resolved.source.codec ? { codec: resolved.source.codec } : {}),
+            ...(resolved.source.bitDepth ? { bitDepth: resolved.source.bitDepth } : {}),
+            ...(resolved.source.sampleRate ? { sampleRate: resolved.source.sampleRate } : {}),
+            ...(resolved.source.bitrateKbps ? { bitrateKbps: resolved.source.bitrateKbps } : {}),
           };
           entry.promise = undefined;
           entry.touchedAt = this.now;

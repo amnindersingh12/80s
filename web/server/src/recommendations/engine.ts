@@ -18,11 +18,22 @@ import type { ListenBrainzClient } from "./listenbrainz.js";
 import type { MusicBrainzClient } from "./musicbrainz.js";
 import type { ArtistCandidate, TrackCandidate } from "./types.js";
 
+import { normalizeLosslessMetadata } from "../providers/types.js";
+
 /** Relative trust in each source when merging scores. */
 const SOURCE_WEIGHT: Record<RecommendationSource, number> = { lastfm: 1, listenbrainz: 0.9, musicbrainz: 0.6 };
 
+const MIXED_TAGS = ["pop", "hip-hop", "rock", "indie", "electronic", "rnb", "punjabi"] as const;
+
 /** Search-friendly aliases for common genre / regional seeds. */
 const TAG_ALIASES: Record<string, string[]> = {
+  mixed: ["pop", "hip hop", "indie", "rock", "electronic", "rnb", "punjabi"],
+  pop: ["pop", "synth-pop", "dance pop", "alt-pop"],
+  rock: ["rock", "alternative rock", "classic rock", "indie rock"],
+  electronic: ["electronic", "synthwave", "house", "electropop"],
+  jazz: ["jazz", "nu jazz", "soul jazz", "smooth jazz"],
+  rnb: ["rnb", "r&b", "neo soul", "contemporary r&b"],
+  "r&b": ["rnb", "r&b", "contemporary r&b", "neo soul"],
   "punjabi pop": ["punjabi", "bhangra", "punjabi pop", "punjabi hip hop", "sidhu moose wala"],
   punjabi: ["punjabi", "bhangra", "punjabi pop"],
   bhangra: ["bhangra", "punjabi", "desi"],
@@ -33,7 +44,6 @@ const TAG_ALIASES: Record<string, string[]> = {
   "lo-fi": ["lo-fi", "lofi", "chillhop"],
   lofi: ["lo-fi", "lofi", "chillhop"],
   synthwave: ["synthwave", "retrowave", "outrun"],
-  "r&b": ["rnb", "r&b", "contemporary r&b"],
   bollywood: ["bollywood", "hindi pop", "indian pop", "filmi"],
   "80s": ["80s", "new wave", "synth-pop"],
 };
@@ -110,16 +120,33 @@ export class RecommendationEngine {
       const cacheKey = `recmatch:v1:${t.key}`;
       const cached = await this.deps.cache.get<Track | null>(cacheKey);
       if (cached !== undefined) {
-        return cached
-          ? { ...t, availability: "playable" as const, track: cached, coverUrl: t.coverUrl ?? cached.coverUrl }
-          : { ...t, availability: "metadata-only" as const };
+        if (!cached) return { ...t, availability: "metadata-only" as const };
+        const norm = normalizeLosslessMetadata(cached);
+        return {
+          ...t,
+          ...(norm.durationMs ? { durationMs: norm.durationMs } : {}),
+          availability: "playable" as const,
+          track: norm,
+          coverUrl: t.coverUrl ?? norm.coverUrl,
+          artworkUrl: t.artworkUrl ?? norm.artworkUrl ?? t.coverUrl ?? norm.coverUrl,
+        };
       }
       if (remainingLookups <= 0) return { ...t, availability: "metadata-only" as const };
       remainingLookups--;
       try {
-        const track = await this.match(t);
+        const matched = await this.match(t);
+        const track = matched ? normalizeLosslessMetadata(matched) : undefined;
         await this.deps.cache.set(cacheKey, track ?? null, this.deps.cacheTtlMs);
-        return track ? { ...t, availability: "playable" as const, track, coverUrl: t.coverUrl ?? track.coverUrl } : { ...t, availability: "metadata-only" as const };
+        return track
+          ? {
+              ...t,
+              ...(track.durationMs ? { durationMs: track.durationMs } : {}),
+              availability: "playable" as const,
+              track,
+              coverUrl: t.coverUrl ?? track.coverUrl,
+              artworkUrl: t.artworkUrl ?? track.artworkUrl ?? t.coverUrl ?? track.coverUrl,
+            }
+          : { ...t, availability: "metadata-only" as const };
       } catch {
         matchFailed = true;
         return { ...t, availability: "metadata-only" as const };
@@ -140,27 +167,36 @@ export class RecommendationEngine {
 
     const finalTracks = [...relatedTracks];
     if (this.deps.maxMatchLookups !== undefined && finalTracks.filter((t) => t.availability === "playable").length < Math.min(8, limit)) {
-      const q = resolved.type === "tag" ? (expandTag(resolved.tag as string)[0] ?? resolved.tag!) : (resolved.artist ?? resolved.label);
+      const queries =
+        resolved.type === "tag" && resolved.tag === "mixed"
+          ? ["the weeknd", "kendrick lamar", "tame impala", "daft punk"]
+          : [resolved.type === "tag" ? (expandTag(resolved.tag as string)[0] ?? resolved.tag!) : (resolved.artist ?? resolved.label)];
       const seen = new Set(finalTracks.map((t) => t.key));
-      const backfill = await this.deps.chain.search(q, { limit }).catch(() => null);
+      const perQ = Math.max(4, Math.ceil(limit / queries.length));
+      const searches = await Promise.all(queries.map((q) => this.deps.chain.search(q, { limit: perQ }).catch(() => null)));
       const extras: typeof finalTracks = [];
-      for (const t of backfill?.tracks ?? []) {
-        const k = trackKey(t.artist, t.title);
-        if (seen.has(k) || k === seedKey) continue;
-        seen.add(k);
-        extras.push({
-          key: k,
-          title: t.title,
-          artist: t.artist,
-          ...(t.album ? { album: t.album } : {}),
-          ...(t.durationSec ? { durationSec: t.durationSec } : {}),
-          coverUrl: t.coverUrl,
-          score: 0.45,
-          sources: ["listenbrainz"],
-          reason: resolved.type === "tag" ? `Top ${resolved.label}` : `Related to ${resolved.label}`,
-          availability: "playable",
-          track: t,
-        });
+      for (const res of searches) {
+        for (const rawTrack of res?.tracks ?? []) {
+          const t = normalizeLosslessMetadata(rawTrack);
+          const k = trackKey(t.artist, t.title);
+          if (seen.has(k) || k === seedKey) continue;
+          seen.add(k);
+          extras.push({
+            key: k,
+            title: t.title,
+            artist: t.artist,
+            ...(t.album ? { album: t.album } : {}),
+            ...(t.durationSec ? { durationSec: t.durationSec } : {}),
+            ...(t.durationMs ? { durationMs: t.durationMs } : {}),
+            coverUrl: t.coverUrl,
+            artworkUrl: t.artworkUrl ?? t.coverUrl,
+            score: 0.45,
+            sources: ["listenbrainz"],
+            reason: resolved.type === "tag" ? `Top ${resolved.label}` : `Related to ${resolved.label}`,
+            availability: "playable",
+            track: t,
+          });
+        }
       }
       if (extras.length > 0) {
         const playable = finalTracks.filter((t) => t.availability === "playable");
@@ -386,6 +422,18 @@ export class RecommendationEngine {
       const tags = expandTag(tag);
       if (lastfm) {
         tasks.push(["lastfm", async () => {
+          if (tag === "mixed") {
+            const subsets = await Promise.all(
+              MIXED_TAGS.slice(0, 4).map(async (g) => ({
+                tracks: await lastfm.tagTopTracks(g, 15).catch(() => []),
+                artists: await lastfm.tagTopArtists(g, 6).catch(() => []),
+              })),
+            );
+            return {
+              tracks: subsets.flatMap((s) => s.tracks),
+              artists: subsets.flatMap((s) => s.artists),
+            };
+          }
           const [tracks, artists] = await Promise.all([lastfm.tagTopTracks(tag, 50), lastfm.tagTopArtists(tag, 20)]);
           // Fall back to an alias when Last.fm has no chart for the exact phrase.
           const alias = tags.find((t) => t !== tag);
@@ -491,8 +539,8 @@ function mergeTrack(map: Map<string, TrackDraft>, c: TrackCandidate): void {
       title: c.title,
       artist: c.artist,
       ...(c.album ? { album: c.album } : {}),
-      ...(c.durationSec ? { durationSec: c.durationSec } : {}),
-      ...(c.coverUrl ? { coverUrl: c.coverUrl } : {}),
+      ...(c.durationSec ? { durationSec: c.durationSec, durationMs: Math.round(c.durationSec * 1000) } : {}),
+      ...(c.coverUrl ? { coverUrl: c.coverUrl, artworkUrl: c.coverUrl } : {}),
       ...(c.mbid ? { mbid: c.mbid } : {}),
       ...(c.reason ? { reason: c.reason } : {}),
       score: weighted,
